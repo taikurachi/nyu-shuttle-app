@@ -1,36 +1,190 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NYU Shuttle App
 
-## Getting Started
+A complete mobile and web application for NYU shuttle transit, including route planning, real-time arrivals, and interactive maps.
 
-First, run the development server:
+## Project Structure
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+nyu-shuttle-app/
+├── app/              # Next.js web application
+├── mobile/           # React Native mobile app (Expo)
+├── backend/          # Backend API and database
+│   ├── api/         # Express.js REST API
+│   └── db/          # PostgreSQL database setup
+└── README.md        # This file
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Quick Start
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 1. Backend Setup (Database & API)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+See [backend/README.md](./backend/README.md) for detailed instructions.
 
-## Learn More
+**Quick setup:**
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+# 1. Install PostgreSQL with PostGIS
+# 2. Create database
+createdb nyu_transit
+psql nyu_transit -c "CREATE EXTENSION postgis;"
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# 3. Set up database schema
+cd backend/db
+cp .env.example .env
+# Edit .env with your credentials
+psql -U postgres -d nyu_transit -f schema.sql
+npm install
+npm run upload-schedule
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# 4. Start API server
+cd ../api
+cp .env.example .env
+# Edit .env with your credentials
+npm install
+npm run dev
+```
 
-## Deploy on Vercel
+### 2. Web App Setup
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+cd app
+npm install
+npm run dev
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open [http://localhost:3000](http://localhost:3000)
+
+### 3. Mobile App Setup
+
+```bash
+cd mobile
+npm install
+npm start
+```
+
+Scan the QR code with Expo Go app on your phone, or press `i` for iOS simulator / `a` for Android emulator.
+
+## Features
+
+### Web App (Next.js)
+
+- Interactive map with Leaflet
+- Location search
+- Route visualization
+- Real-time location tracking
+
+### Mobile App (React Native)
+
+- Native maps (Apple Maps / Google Maps)
+- Location services
+- Route planning
+- Native UI components
+
+### Backend API
+
+- RESTful API for routes, stops, trips
+- Route planning algorithm
+- Real-time arrival information
+- PostgreSQL with PostGIS for geospatial queries
+
+## API Endpoints
+
+The backend API runs on `http://localhost:3000` (default)
+
+- `GET /v1/routes` - Get all shuttle routes
+- `GET /v1/stops` - Get all stops
+- `GET /v1/stops/:stop_id/next_arrivals` - Get next arrivals
+- `GET /v1/plan` - Plan route between locations
+- `GET /v1/trips/nearby` - Find nearby trips
+
+See [backend/api/api_design.md](./backend/api/api_design.md) for complete documentation.
+
+## Technologies
+
+### Frontend
+
+- **Web**: Next.js 16, React 19, TypeScript, Tailwind CSS, Leaflet
+- **Mobile**: React Native, Expo, TypeScript, react-native-maps, NativeWind
+
+### Backend
+
+- **API**: Express.js, TypeScript, PostgreSQL
+- **Database**: PostgreSQL 12+, PostGIS extension
+
+## Development
+
+### Running Everything
+
+1. **Start Database** (if not running as service)
+
+   ```bash
+   brew services start postgresql@14  # macOS
+   ```
+
+2. **Start API Server**
+
+   ```bash
+   cd backend/api
+   npm run dev
+   ```
+
+3. **Start Web App** (in new terminal)
+
+   ```bash
+   cd app
+   npm run dev
+   ```
+
+4. **Start Mobile App** (in new terminal)
+   ```bash
+   cd mobile
+   npm start
+   ```
+
+## Environment Variables
+
+### Backend API
+
+Create `backend/api/.env`:
+
+```
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=nyu_transit
+PGUSER=postgres
+PGPASSWORD=your_password
+PORT=3000
+```
+
+### Backend Database
+
+Create `backend/db/.env`:
+
+```
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=nyu_transit
+PGUSER=postgres
+PGPASSWORD=your_password
+```
+
+## Production Deployment
+
+### Backend
+
+- Deploy API to a cloud service (Heroku, Railway, AWS, etc.)
+- Use managed PostgreSQL with PostGIS (AWS RDS, Heroku Postgres, etc.)
+
+### Web App
+
+- Deploy to Vercel (recommended for Next.js)
+- Or any Node.js hosting service
+
+### Mobile App
+
+- Build with Expo EAS Build
+- Submit to App Store / Google Play Store
+
+## License
+
+ISC

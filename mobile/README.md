@@ -102,9 +102,33 @@ The app requires location permissions to:
 - **NativeWind** - Tailwind CSS for React Native
 - **TypeScript** - Type safety
 
+## API Integration
+
+The app connects to the NYU Transit API:
+- **Base URL**: `https://nyu-transit.vercel.app`
+- Fetches real-time stops, routes, and trip information
+- Uses the `/v1/plan` endpoint for route planning
+
 ## Notes
 
 - The app uses Google Maps on Android and Apple Maps on iOS
-- Routes are calculated using OSRM (Open Source Routing Machine)
-- Location data is only used locally and not sent to any servers
+- Routes are calculated using the backend API (`/v1/plan` endpoint)
+- Location data is used to find nearby stops and plan routes
+- All data is fetched from the deployed backend API
+
+## Quick Start with iOS Simulator
+
+Since you have Xcode installed:
+
+```bash
+cd mobile
+npm run ios
+```
+
+This will automatically:
+1. Start the Expo dev server
+2. Open the iOS simulator
+3. Build and install the app
+
+See [RUNNING.md](./RUNNING.md) for detailed instructions and troubleshooting.
 

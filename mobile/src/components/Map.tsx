@@ -14,9 +14,14 @@ import MapView, {
   PROVIDER_DEFAULT,
 } from "react-native-maps";
 import type { Location } from "../types/locations";
-import { BUS_STOPS } from "../types/locations";
-import type { RouteSegment } from "../utils/routes";
-import { generateShuttleRoute, findNearestBusStop } from "../utils/routes";
+import {
+  getStops,
+  planRoute,
+  getNearbyTrips,
+  type Stop,
+  type Plan,
+  type PlanSegment,
+} from "../services/api";
 
 // NYC coordinates (centered around Manhattan)
 const NYC_CENTER: Region = {
@@ -33,42 +38,102 @@ interface MapProps {
   selectedLocation: Location | null;
 }
 
+interface RouteSegment {
+  points: Array<{ latitude: number; longitude: number }>;
+  color: string;
+  isDashed: boolean;
+}
+
 export default function Map({ userLocation, selectedLocation }: MapProps) {
+  const [stops, setStops] = useState<Stop[]>([]);
   const [routeSegments, setRouteSegments] = useState<RouteSegment[]>([]);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
-  const [nearestStop, setNearestStop] = useState<(typeof BUS_STOPS)[0] | null>(
-    null
-  );
+  const [nearestStop, setNearestStop] = useState<Stop | null>(null);
   const [region, setRegion] = useState<Region>(NYC_CENTER);
+
+  // Fetch stops from API on mount
+  useEffect(() => {
+    const fetchStops = async () => {
+      try {
+        const stopsData = await getStops();
+        setStops(stopsData);
+      } catch (error) {
+        console.error("Error fetching stops:", error);
+      }
+    };
+    fetchStops();
+  }, []);
 
   // Find nearest bus stop when user location changes
   useEffect(() => {
-    if (userLocation) {
-      const stop = findNearestBusStop([
-        userLocation.latitude,
-        userLocation.longitude,
-      ]);
-      setNearestStop(stop);
+    if (userLocation && stops.length > 0) {
+      const findNearest = async () => {
+        try {
+          const nearbyTrips = await getNearbyTrips(
+            userLocation.latitude,
+            userLocation.longitude,
+            1000
+          );
+          if (nearbyTrips.length > 0) {
+            const nearestStopId = nearbyTrips[0].nearby_stop_id;
+            const stop = stops.find((s) => s.stop_id === nearestStopId);
+            if (stop) {
+              setNearestStop(stop);
+            }
+          }
+        } catch (error) {
+          console.error("Error finding nearest stop:", error);
+        }
+      };
+      findNearest();
     }
-  }, [userLocation]);
+  }, [userLocation, stops]);
+
+  // Convert plan segments to route segments for display
+  const convertPlanToSegments = (plan: Plan): RouteSegment[] => {
+    return plan.segments.map((segment: PlanSegment) => {
+      const points = [
+        { latitude: segment.from_lat, longitude: segment.from_lon },
+        { latitude: segment.to_lat, longitude: segment.to_lon },
+      ];
+
+      // Walking segments are gray and dashed, transit segments are colored and solid
+      const color = segment.type === "walk" ? "#6b7280" : "#3b82f6";
+      const isDashed = segment.type === "walk";
+
+      return { points, color, isDashed };
+    });
+  };
 
   // Fetch route when user location or selected destination changes
   useEffect(() => {
-    if (userLocation && selectedLocation) {
-      setIsLoadingRoute(true);
-      generateShuttleRoute(
-        [userLocation.latitude, userLocation.longitude],
-        selectedLocation
-      )
-        .then((segments) => {
-          setRouteSegments(segments);
-          setIsLoadingRoute(false);
+    let cancelled = false;
 
-          // Fit map to show entire route
-          if (segments.length > 0) {
-            const allPoints = segments.flatMap((segment) => segment.points);
-            const lats = allPoints.map((p) => p[0]);
-            const lngs = allPoints.map((p) => p[1]);
+    if (userLocation && selectedLocation) {
+      const fetchRoute = async () => {
+        setIsLoadingRoute(true);
+        try {
+          const plans = await planRoute(
+            userLocation.latitude,
+            userLocation.longitude,
+            selectedLocation.lat,
+            selectedLocation.lng
+          );
+
+          if (!cancelled && plans.length > 0) {
+            const segments = convertPlanToSegments(plans[0]);
+            setRouteSegments(segments);
+
+            // Fit map to show entire route
+            const allPoints = segments.flatMap(
+              (segment: RouteSegment) => segment.points
+            );
+            const lats = allPoints.map(
+              (p: { latitude: number; longitude: number }) => p.latitude
+            );
+            const lngs = allPoints.map(
+              (p: { latitude: number; longitude: number }) => p.longitude
+            );
 
             const minLat = Math.min(...lats);
             const maxLat = Math.max(...lats);
@@ -78,16 +143,27 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
             setRegion({
               latitude: (minLat + maxLat) / 2,
               longitude: (minLng + maxLng) / 2,
-              latitudeDelta: (maxLat - minLat) * 1.5,
-              longitudeDelta: (maxLng - minLng) * 1.5,
+              latitudeDelta: Math.max((maxLat - minLat) * 1.5, 0.01),
+              longitudeDelta: Math.max((maxLng - minLng) * 1.5, 0.01),
             });
           }
-        })
-        .catch((error) => {
-          console.error("Error loading route:", error);
-          setIsLoadingRoute(false);
-          setRouteSegments([]);
-        });
+        } catch (error) {
+          if (!cancelled) {
+            console.error("Error loading route:", error);
+            setRouteSegments([]);
+          }
+        } finally {
+          if (!cancelled) {
+            setIsLoadingRoute(false);
+          }
+        }
+      };
+
+      fetchRoute();
+
+      return () => {
+        cancelled = true;
+      };
     } else if (selectedLocation) {
       // Center on selected location
       setRegion({
@@ -96,6 +172,7 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
         latitudeDelta: DEFAULT_ZOOM,
         longitudeDelta: DEFAULT_ZOOM,
       });
+      setRouteSegments([]);
     } else if (userLocation) {
       // Center on user location
       setRegion({
@@ -104,6 +181,7 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
         latitudeDelta: DEFAULT_ZOOM,
         longitudeDelta: DEFAULT_ZOOM,
       });
+      setRouteSegments([]);
     } else {
       setRouteSegments([]);
     }
@@ -124,15 +202,15 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
         maxZoomLevel={18}
       >
         {/* Bus stop markers */}
-        {BUS_STOPS.map((stop) => {
-          const isNearest = nearestStop?.id === stop.id;
+        {stops.map((stop) => {
+          const isNearest = nearestStop?.stop_id === stop.stop_id;
           return (
             <Marker
-              key={stop.id}
-              coordinate={{ latitude: stop.lat, longitude: stop.lng }}
+              key={stop.stop_id}
+              coordinate={{ latitude: stop.lat, longitude: stop.lon }}
               pinColor={isNearest ? "#10b981" : "#f59e0b"}
-              title={stop.name}
-              description={isNearest ? "Nearest Stop" : undefined}
+              title={stop.stop_name}
+              description={isNearest ? "Nearest Stop" : stop.stop_description}
             />
           );
         })}
@@ -158,17 +236,14 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
           />
         )}
 
-        {/* Route segments: walking to bus stop and shuttle to destination */}
+        {/* Route segments: walking and transit */}
         {routeSegments.map((segment, index) => (
           <Polyline
             key={index}
-            coordinates={segment.points.map(([lat, lng]) => ({
-              latitude: lat,
-              longitude: lng,
-            }))}
+            coordinates={segment.points}
             strokeColor={segment.color}
-            strokeWidth={index === 0 ? 4 : 5}
-            lineDashPattern={index === 0 ? [5, 5] : [10, 5]}
+            strokeWidth={segment.isDashed ? 4 : 5}
+            lineDashPattern={segment.isDashed ? [5, 5] : undefined}
           />
         ))}
       </MapView>
