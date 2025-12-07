@@ -1,27 +1,33 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import * as Location from 'expo-location';
-import Map from './src/components/Map';
-import SearchBar from './src/components/SearchBar';
-import type { Location as LocationType } from './src/types/locations';
-import './global.css';
+import React, { useEffect, useState } from "react";
+import { View, Text, StyleSheet } from "react-native";
+import { StatusBar } from "expo-status-bar";
+import * as Location from "expo-location";
+import Map from "./src/components/Map";
+import BottomSheet from "./src/components/BottomSheet";
+import type { Location as LocationType } from "./src/types/locations";
+import type { Plan } from "./src/services/api";
+import "./global.css";
 
 export default function App() {
   const [userLocation, setUserLocation] = useState<{
     latitude: number;
     longitude: number;
   } | null>(null);
-  const [selectedLocation, setSelectedLocation] = useState<LocationType | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState<LocationType | null>(
+    null
+  );
+  const [selectedRoute, setSelectedRoute] = useState<Plan | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
 
   useEffect(() => {
     (async () => {
       // Request location permissions
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setLocationError('Location permission was denied. Please enable location permissions in settings.');
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        setLocationError(
+          "Location permission was denied. Please enable location permissions in settings."
+        );
         setIsLoadingLocation(false);
         return;
       }
@@ -37,8 +43,10 @@ export default function App() {
         });
         setIsLoadingLocation(false);
       } catch (error) {
-        console.error('Error getting location:', error);
-        setLocationError('Unable to get your location. Please check your location settings.');
+        console.error("Error getting location:", error);
+        setLocationError(
+          "Unable to get your location. Please check your location settings."
+        );
         setIsLoadingLocation(false);
       }
     })();
@@ -46,13 +54,27 @@ export default function App() {
 
   const handleLocationSelect = (location: LocationType | null) => {
     setSelectedLocation(location);
+    setSelectedRoute(null); // Clear route when location changes
+  };
+
+  const handleRouteSelect = (plan: Plan) => {
+    setSelectedRoute(plan);
   };
 
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
-      <SearchBar onLocationSelect={handleLocationSelect} />
-      <Map userLocation={userLocation} selectedLocation={selectedLocation} />
+      <Map
+        userLocation={userLocation}
+        selectedLocation={selectedLocation}
+        selectedRoute={selectedRoute}
+      />
+      <BottomSheet
+        userLocation={userLocation}
+        selectedLocation={selectedLocation}
+        onLocationSelect={handleLocationSelect}
+        onRouteSelect={handleRouteSelect}
+      />
       {locationError && (
         <View style={styles.errorContainer}>
           <View style={styles.errorBox}>
@@ -74,25 +96,25 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
   },
   errorContainer: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 20,
     left: 0,
     right: 0,
-    alignItems: 'center',
+    alignItems: "center",
     zIndex: 1000,
   },
   errorBox: {
-    backgroundColor: '#fef3c7',
+    backgroundColor: "#fef3c7",
     borderWidth: 1,
-    borderColor: '#fbbf24',
+    borderColor: "#fbbf24",
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    maxWidth: '90%',
-    shadowColor: '#000',
+    maxWidth: "90%",
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
@@ -100,23 +122,23 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 14,
-    color: '#92400e',
-    textAlign: 'center',
+    color: "#92400e",
+    textAlign: "center",
   },
   loadingContainer: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 20,
     left: 0,
     right: 0,
-    alignItems: 'center',
+    alignItems: "center",
     zIndex: 1000,
   },
   loadingBox: {
-    backgroundColor: 'white',
+    backgroundColor: "white",
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    shadowColor: '#000',
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
@@ -124,6 +146,6 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 14,
-    color: '#374151',
+    color: "#374151",
   },
 });

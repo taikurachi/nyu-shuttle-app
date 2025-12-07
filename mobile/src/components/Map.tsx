@@ -16,7 +16,6 @@ import MapView, {
 import type { Location } from "../types/locations";
 import {
   getStops,
-  planRoute,
   getNearbyTrips,
   type Stop,
   type Plan,
@@ -36,6 +35,7 @@ const DEFAULT_ZOOM = 0.05;
 interface MapProps {
   userLocation: { latitude: number; longitude: number } | null;
   selectedLocation: Location | null;
+  selectedRoute: Plan | null;
 }
 
 interface RouteSegment {
@@ -44,10 +44,13 @@ interface RouteSegment {
   isDashed: boolean;
 }
 
-export default function Map({ userLocation, selectedLocation }: MapProps) {
+export default function Map({
+  userLocation,
+  selectedLocation,
+  selectedRoute,
+}: MapProps) {
   const [stops, setStops] = useState<Stop[]>([]);
   const [routeSegments, setRouteSegments] = useState<RouteSegment[]>([]);
-  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [nearestStop, setNearestStop] = useState<Stop | null>(null);
   const [region, setRegion] = useState<Region>(NYC_CENTER);
 
@@ -105,67 +108,36 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
     });
   };
 
-  // Fetch route when user location or selected destination changes
+  // Display route when a specific route is selected
   useEffect(() => {
-    let cancelled = false;
+    if (selectedRoute) {
+      const segments = convertPlanToSegments(selectedRoute);
+      setRouteSegments(segments);
 
-    if (userLocation && selectedLocation) {
-      const fetchRoute = async () => {
-        setIsLoadingRoute(true);
-        try {
-          const plans = await planRoute(
-            userLocation.latitude,
-            userLocation.longitude,
-            selectedLocation.lat,
-            selectedLocation.lng
-          );
+      // Fit map to show entire route
+      const allPoints = segments.flatMap(
+        (segment: RouteSegment) => segment.points
+      );
+      const lats = allPoints.map(
+        (p: { latitude: number; longitude: number }) => p.latitude
+      );
+      const lngs = allPoints.map(
+        (p: { latitude: number; longitude: number }) => p.longitude
+      );
 
-          if (!cancelled && plans.length > 0) {
-            const segments = convertPlanToSegments(plans[0]);
-            setRouteSegments(segments);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
 
-            // Fit map to show entire route
-            const allPoints = segments.flatMap(
-              (segment: RouteSegment) => segment.points
-            );
-            const lats = allPoints.map(
-              (p: { latitude: number; longitude: number }) => p.latitude
-            );
-            const lngs = allPoints.map(
-              (p: { latitude: number; longitude: number }) => p.longitude
-            );
-
-            const minLat = Math.min(...lats);
-            const maxLat = Math.max(...lats);
-            const minLng = Math.min(...lngs);
-            const maxLng = Math.max(...lngs);
-
-            setRegion({
-              latitude: (minLat + maxLat) / 2,
-              longitude: (minLng + maxLng) / 2,
-              latitudeDelta: Math.max((maxLat - minLat) * 1.5, 0.01),
-              longitudeDelta: Math.max((maxLng - minLng) * 1.5, 0.01),
-            });
-          }
-        } catch (error) {
-          if (!cancelled) {
-            console.error("Error loading route:", error);
-            setRouteSegments([]);
-          }
-        } finally {
-          if (!cancelled) {
-            setIsLoadingRoute(false);
-          }
-        }
-      };
-
-      fetchRoute();
-
-      return () => {
-        cancelled = true;
-      };
+      setRegion({
+        latitude: (minLat + maxLat) / 2,
+        longitude: (minLng + maxLng) / 2,
+        latitudeDelta: Math.max((maxLat - minLat) * 1.5, 0.01),
+        longitudeDelta: Math.max((maxLng - minLng) * 1.5, 0.01),
+      });
     } else if (selectedLocation) {
-      // Center on selected location
+      // Center on selected location (but don't show route yet)
       setRegion({
         latitude: selectedLocation.lat,
         longitude: selectedLocation.lng,
@@ -185,7 +157,7 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
     } else {
       setRouteSegments([]);
     }
-  }, [userLocation, selectedLocation]);
+  }, [userLocation, selectedLocation, selectedRoute]);
 
   return (
     <View style={styles.container}>
@@ -247,16 +219,6 @@ export default function Map({ userLocation, selectedLocation }: MapProps) {
           />
         ))}
       </MapView>
-
-      {/* Loading indicator for route */}
-      {isLoadingRoute && userLocation && selectedLocation && (
-        <View style={styles.loadingContainer}>
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#3b82f6" />
-            <Text style={styles.loadingText}>Loading route...</Text>
-          </View>
-        </View>
-      )}
     </View>
   );
 }
