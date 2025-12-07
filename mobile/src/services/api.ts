@@ -175,3 +175,68 @@ export async function planRoute(
   const data = await response.json();
   return data.plans || [];
 }
+
+/**
+ * Get stops for a specific trip (if API supports it)
+ */
+export async function getTripStops(tripId: number): Promise<Stop[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/v1/trips/${tripId}/stops`);
+    if (!response.ok) {
+      // If endpoint doesn't exist, return empty array
+      return [];
+    }
+    const data = await response.json();
+    return data.stops || [];
+  } catch (error) {
+    console.warn(`Trip stops endpoint may not be available: ${error}`);
+    return [];
+  }
+}
+
+/**
+ * Get stops between two stop IDs for a specific trip
+ * Falls back to just the two stops if trip stops endpoint is not available
+ */
+export async function getStopsBetween(
+  tripId: number,
+  fromStopId: number,
+  toStopId: number,
+  allStops: Stop[]
+): Promise<Stop[]> {
+  try {
+    const tripStops = await getTripStops(tripId);
+
+    if (tripStops.length === 0) {
+      // Fallback: return just the from and to stops from allStops
+      const fromStop = allStops.find((s) => s.stop_id === fromStopId);
+      const toStop = allStops.find((s) => s.stop_id === toStopId);
+      return [fromStop, toStop].filter(Boolean) as Stop[];
+    }
+
+    // Find the indices of from and to stops
+    const fromIndex = tripStops.findIndex((s) => s.stop_id === fromStopId);
+    const toIndex = tripStops.findIndex((s) => s.stop_id === toStopId);
+
+    if (fromIndex === -1 || toIndex === -1) {
+      // If stops not found in trip, return just the endpoints
+      const fromStop = allStops.find((s) => s.stop_id === fromStopId);
+      const toStop = allStops.find((s) => s.stop_id === toStopId);
+      return [fromStop, toStop].filter(Boolean) as Stop[];
+    }
+
+    // Return all stops between from and to (inclusive)
+    if (fromIndex <= toIndex) {
+      return tripStops.slice(fromIndex, toIndex + 1);
+    } else {
+      // If going backwards, reverse the slice
+      return tripStops.slice(toIndex, fromIndex + 1).reverse();
+    }
+  } catch (error) {
+    console.warn("Error getting stops between:", error);
+    // Fallback: return just the from and to stops
+    const fromStop = allStops.find((s) => s.stop_id === fromStopId);
+    const toStop = allStops.find((s) => s.stop_id === toStopId);
+    return [fromStop, toStop].filter(Boolean) as Stop[];
+  }
+}

@@ -71,8 +71,8 @@ interface RouteOption {
 }
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
-const COLLAPSED_HEIGHT = 80; // Height when collapsed (just the button)
-const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.5; // Height when expanded
+const COLLAPSED_HEIGHT = 60; // Height when collapsed (just the button)
+const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.9; // Height when expanded
 const MIN_SWIPE_DISTANCE = 50; // Minimum distance to trigger snap
 
 export default function BottomSheet({
@@ -92,6 +92,8 @@ export default function BottomSheet({
   const [isLoadingRouteOptions, setIsLoadingRouteOptions] = useState(false);
   const [walkingTime, setWalkingTime] = useState<number | null>(null);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [selectedRouteOption, setSelectedRouteOption] =
+    useState<RouteOption | null>(null);
 
   // Animated value for bottom sheet position (only translateY, height is fixed)
   const translateY = useRef(new Animated.Value(0)).current;
@@ -175,9 +177,14 @@ export default function BottomSheet({
           );
           setWalkingTime(walkTime);
 
+          // Filter plans to only include those with at least one transit segment
+          const plansWithTransit = plans.filter((plan) =>
+            plan.segments.some((segment) => segment.type === "transit")
+          );
+
           // Convert plans to route options
           const now = new Date();
-          const options: RouteOption[] = plans
+          const options: RouteOption[] = plansWithTransit
             .slice(0, 3)
             .map((plan, index) => {
               // Parse departure time
@@ -349,7 +356,34 @@ export default function BottomSheet({
   };
 
   const handleRouteOptionSelect = (option: RouteOption) => {
-    onRouteSelect(option.plan);
+    setSelectedRouteOption(option);
+    onRouteSelect(option.plan); // Also update the map
+  };
+
+  const handleBackToRoutes = () => {
+    setSelectedRouteOption(null);
+  };
+
+  const formatTime = (timeString: string): string => {
+    const [hours, minutes] = timeString.split(":").map(Number);
+    const date = new Date();
+    date.setHours(hours, minutes || 0, 0, 0);
+    const hours12 = date.getHours() % 12 || 12;
+    const ampm = date.getHours() >= 12 ? "PM" : "AM";
+    return `${hours12}:${String(date.getMinutes()).padStart(2, "0")} ${ampm}`;
+  };
+
+  const calculateArrivalTime = (
+    departureTime: string,
+    durationMinutes: number
+  ): string => {
+    const [hours, minutes] = departureTime.split(":").map(Number);
+    const date = new Date();
+    date.setHours(hours, minutes || 0, 0, 0);
+    date.setMinutes(date.getMinutes() + durationMinutes);
+    const hours12 = date.getHours() % 12 || 12;
+    const ampm = date.getHours() >= 12 ? "PM" : "AM";
+    return `${hours12}:${String(date.getMinutes()).padStart(2, "0")} ${ampm}`;
   };
 
   const handleClearDestination = () => {
@@ -477,6 +511,8 @@ export default function BottomSheet({
             onFocus={handleSearchFocus}
             returnKeyType="search"
             autoFocus={isSearchFocused}
+            autoCorrect={false}
+            clearButtonMode="while-editing"
           />
           {isSearchFocused && (
             <TouchableOpacity
@@ -489,7 +525,7 @@ export default function BottomSheet({
         </View>
 
         {/* Search Results */}
-        {showSearchResults && (
+        {isSearchFocused && showSearchResults && (
           <View style={styles.searchResults}>
             {searchQuery.trim() === "" ? (
               // Show preset locations when search is empty but focused
@@ -548,10 +584,165 @@ export default function BottomSheet({
           </View>
         )}
 
-        {/* Route Options - Show when location is selected */}
+        {/* Detailed Route View - Show when a route is selected */}
         {!isSearchFocused &&
           !showSearchResults &&
           selectedLocation &&
+          selectedRouteOption && (
+            <View style={styles.detailedRouteContainer}>
+              {/* Back button */}
+              <TouchableOpacity
+                onPress={handleBackToRoutes}
+                style={styles.backButton}
+              >
+                <Text style={styles.backButtonText}>← Back</Text>
+              </TouchableOpacity>
+
+              {/* Arrival info */}
+              <View style={styles.arrivalInfo}>
+                <Text style={styles.arrivalTime}>
+                  Arrive at{" "}
+                  {calculateArrivalTime(
+                    selectedRouteOption.plan.departure_time,
+                    selectedRouteOption.totalDuration
+                  )}
+                </Text>
+                <Text style={styles.arrivalDetails}>
+                  {selectedRouteOption.totalDuration} min · Go in{" "}
+                  {selectedRouteOption.minutesUntilDeparture} mins
+                </Text>
+              </View>
+
+              {/* Timeline with route letter */}
+              <View style={styles.routeTimelineBar}>
+                <View style={styles.routeTimelineDots}>
+                  {Array.from({ length: 20 }).map((_, i) => (
+                    <View key={i} style={styles.routeTimelineDot} />
+                  ))}
+                </View>
+                <View style={styles.routeTimelineLetter}>
+                  <Text style={styles.routeTimelineLetterText}>
+                    {selectedRouteOption.routeLetter}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Route segments */}
+              <View style={styles.routeSegmentsContainer}>
+                {selectedRouteOption.plan.segments.map((segment, segIndex) => {
+                  const isTransit = segment.type === "transit";
+                  const isFirstSegment = segIndex === 0;
+                  const isLastSegment =
+                    segIndex === selectedRouteOption.plan.segments.length - 1;
+                  const prevSegment =
+                    segIndex > 0
+                      ? selectedRouteOption.plan.segments[segIndex - 1]
+                      : null;
+                  const nextSegment =
+                    segIndex < selectedRouteOption.plan.segments.length - 1
+                      ? selectedRouteOption.plan.segments[segIndex + 1]
+                      : null;
+
+                  if (isTransit) {
+                    const fromStop = stops.find(
+                      (s) => s.stop_id === segment.from_stop_id
+                    );
+                    const toStop = stops.find(
+                      (s) => s.stop_id === segment.to_stop_id
+                    );
+                    return (
+                      <View key={segIndex} style={styles.transitSegment}>
+                        <View style={styles.transitLine}>
+                          {prevSegment && prevSegment.type === "walk" && (
+                            <View style={styles.transitLineTop} />
+                          )}
+                          {fromStop && (
+                            <View style={styles.transitLineMiddle} />
+                          )}
+                          {toStop && <View style={styles.transitLineMiddle} />}
+                          {nextSegment && nextSegment.type === "walk" && (
+                            <View style={styles.transitLineBottom} />
+                          )}
+                        </View>
+                        <View style={styles.transitStops}>
+                          {fromStop && (
+                            <View style={styles.transitStop}>
+                              <Text style={styles.transitStopName}>
+                                {fromStop.stop_name}
+                              </Text>
+                              <Text style={styles.transitStopTime}>
+                                {segment.departure_time
+                                  ? formatTime(segment.departure_time)
+                                  : ""}
+                              </Text>
+                            </View>
+                          )}
+                          {fromStop &&
+                            toStop &&
+                            fromStop.stop_id !== toStop.stop_id && (
+                              <Text style={styles.transitStopNote}>
+                                1 stop before...
+                              </Text>
+                            )}
+                          {toStop && (
+                            <View style={styles.transitStop}>
+                              <Text style={styles.transitStopName}>
+                                {toStop.stop_name}
+                              </Text>
+                              <Text style={styles.transitStopTime}>
+                                {segment.arrival_time
+                                  ? formatTime(segment.arrival_time)
+                                  : ""}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  } else {
+                    // Walking segment
+                    return (
+                      <View key={segIndex} style={styles.walkingSegment}>
+                        <View style={styles.walkingLineContainer}>
+                          {Array.from({ length: 8 }).map((_, i) => (
+                            <View key={i} style={styles.walkingLineDot} />
+                          ))}
+                        </View>
+                        <View style={styles.walkingContent}>
+                          <View style={styles.walkingInfo}>
+                            <Text style={styles.walkingIcon}>🚶</Text>
+                            <Text style={styles.walkingTime}>
+                              {segment.duration_minutes} minutes
+                            </Text>
+                          </View>
+                          {(isFirstSegment || isLastSegment) && (
+                            <View style={styles.locationInfo}>
+                              <Text style={styles.locationLabel}>
+                                {isFirstSegment ? "Origin" : "Destination"}
+                              </Text>
+                              <Text style={styles.locationAddress}>
+                                {isFirstSegment
+                                  ? userLocation
+                                    ? "Current location"
+                                    : "Origin"
+                                  : selectedLocation.name}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  }
+                })}
+              </View>
+            </View>
+          )}
+
+        {/* Route Options - Show when location is selected but no route selected */}
+        {!isSearchFocused &&
+          !showSearchResults &&
+          selectedLocation &&
+          !selectedRouteOption &&
           (isLoadingRouteOptions ? (
             <View style={styles.section}>
               <ActivityIndicator
@@ -562,43 +753,75 @@ export default function BottomSheet({
             </View>
           ) : routeOptions.length > 0 ? (
             <View style={styles.section}>
-              {routeOptions.map((option, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.routeOptionContainer}
-                  onPress={() => handleRouteOptionSelect(option)}
-                >
-                  <View style={styles.routeOptionBar}>
-                    <View style={styles.routeOptionLetter}>
-                      <Text style={styles.routeOptionLetterText}>
-                        {option.routeLetter}
-                      </Text>
-                    </View>
-                    <View style={styles.routeOptionDots}>
-                      {Array.from({ length: 5 }).map((_, i) => {
-                        const isActive = i < 3;
+              {routeOptions.map((option, index) => {
+                // Calculate segment proportions
+                const totalDuration = option.plan.estimated_duration_minutes;
+                const segments = option.plan.segments;
+
+                return (
+                  <TouchableOpacity
+                    key={index}
+                    style={styles.routeOptionContainer}
+                    onPress={() => handleRouteOptionSelect(option)}
+                  >
+                    <View style={styles.routeOptionTimeline}>
+                      {segments.map((segment, segIndex) => {
+                        const widthPercent =
+                          (segment.duration_minutes / totalDuration) * 100;
+                        const isTransit = segment.type === "transit";
+                        const isFirstTransit =
+                          isTransit &&
+                          segments
+                            .slice(0, segIndex)
+                            .every((s) => s.type === "walk");
+
                         return (
                           <View
-                            key={i}
+                            key={segIndex}
                             style={[
-                              styles.routeOptionDot,
-                              isActive && styles.routeOptionDotActive,
+                              isTransit
+                                ? styles.routeOptionTransitSegment
+                                : styles.routeOptionWalkSegment,
+                              { width: `${widthPercent}%` },
                             ]}
-                          />
+                          >
+                            {isTransit && isFirstTransit && (
+                              <View style={styles.routeOptionLetter}>
+                                <Text style={styles.routeOptionLetterText}>
+                                  {option.routeLetter}
+                                </Text>
+                              </View>
+                            )}
+                            {!isTransit && (
+                              <View style={styles.routeOptionWalkDots}>
+                                {Array.from({
+                                  length: Math.max(
+                                    4,
+                                    Math.floor(widthPercent / 3)
+                                  ),
+                                }).map((_, i) => (
+                                  <View
+                                    key={i}
+                                    style={styles.routeOptionWalkDot}
+                                  />
+                                ))}
+                              </View>
+                            )}
+                          </View>
                         );
                       })}
                     </View>
-                  </View>
-                  <View style={styles.routeOptionInfo}>
-                    <Text style={styles.routeOptionDeparture}>
-                      Go in {option.minutesUntilDeparture} mins
-                    </Text>
-                    <Text style={styles.routeOptionDuration}>
-                      {option.totalDuration} min
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
+                    <View style={styles.routeOptionInfo}>
+                      <Text style={styles.routeOptionDeparture}>
+                        Go in {option.minutesUntilDeparture} mins
+                      </Text>
+                      <Text style={styles.routeOptionDuration}>
+                        {option.totalDuration} min
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           ) : (
             <View />
@@ -696,45 +919,45 @@ export default function BottomSheet({
         animationType="slide"
         onRequestClose={handleCloseSearch}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={styles.modalOverlay}
-          keyboardVerticalOffset={0}
-        >
+        <View style={styles.modalOverlay}>
           <TouchableOpacity
             style={styles.modalBackdrop}
             activeOpacity={1}
             onPress={handleCloseSearch}
           />
-          <View style={styles.modalContent} pointerEvents="box-none">
-            <View pointerEvents="box-none">{renderContent()}</View>
-          </View>
-        </KeyboardAvoidingView>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalContent}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
+          >
+            <View style={styles.modalInnerContent}>
+              <View style={styles.modalContentWrapper}>{renderContent()}</View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
     );
   }
 
-  // Collapsed button view
+  // Collapsed button view - always show at bottom when collapsed
   if (isCollapsed) {
     return (
-      <Animated.View
-        style={[
-          styles.collapsedContainer,
-          {
-            height: COLLAPSED_HEIGHT,
-            transform: [{ translateY }],
-          },
-        ]}
-      >
+      <View style={styles.collapsedContainer}>
         <TouchableOpacity
           style={styles.collapsedButton}
-          onPress={expandSheet}
-          activeOpacity={0.7}
+          onPress={() => {
+            console.log("Collapsed button pressed");
+            expandSheet();
+          }}
+          activeOpacity={0.8}
         >
           <View style={styles.collapsedHandle} />
-          <Text style={styles.collapsedButtonText}>Tap to view routes</Text>
+          <View style={styles.collapsedButtonContent}>
+            <Text style={styles.collapsedButtonIcon}>↑</Text>
+            <Text style={styles.collapsedButtonText}>Tap to view routes</Text>
+          </View>
         </TouchableOpacity>
-      </Animated.View>
+      </View>
     );
   }
 
@@ -765,18 +988,33 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    justifyContent: "flex-end",
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0, 0, 0, 0.5)",
-    zIndex: 0,
   },
   modalContent: {
     flex: 1,
     justifyContent: "flex-end",
-    zIndex: 1,
-    pointerEvents: "box-none",
+  },
+  modalInnerContent: {
+    backgroundColor: "white",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: "90%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 10,
+    minHeight: 300,
+  },
+  modalContentWrapper: {
+    flex: 1,
+    backgroundColor: "white",
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 32,
   },
   animatedContainer: {
     position: "absolute",
@@ -804,36 +1042,48 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
+    height: COLLAPSED_HEIGHT,
     backgroundColor: "white",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 10,
-    overflow: "hidden",
-    justifyContent: "center",
-    alignItems: "center",
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 25,
+    zIndex: 1000,
   },
   collapsedButton: {
     width: "100%",
     height: "100%",
     justifyContent: "center",
     alignItems: "center",
-    paddingVertical: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: "white",
   },
   collapsedHandle: {
     width: 40,
     height: 4,
-    backgroundColor: "#d1d5db",
+    backgroundColor: "#9ca3af",
     borderRadius: 2,
-    marginBottom: 8,
+    marginBottom: 10,
+  },
+  collapsedButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  collapsedButtonIcon: {
+    fontSize: 20,
+    color: "#8b5cf6",
+    fontWeight: "bold",
   },
   collapsedButtonText: {
-    fontSize: 14,
-    color: "#6b7280",
-    fontWeight: "500",
+    fontSize: 16,
+    color: "#111827",
+    fontWeight: "600",
   },
   dragHandle: {
     width: "100%",
@@ -848,6 +1098,9 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   contentWrapper: {
+    flex: 1,
+  },
+  modalContentWrapper: {
     flex: 1,
   },
   expandedContainer: {
@@ -998,6 +1251,8 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 16,
     flex: 1,
+    maxHeight: 500,
+    backgroundColor: "white",
   },
   searchResultsList: {
     flex: 1,
@@ -1057,43 +1312,58 @@ const styles = StyleSheet.create({
   routeOptionContainer: {
     marginBottom: 16,
   },
-  routeOptionBar: {
+  routeOptionTimeline: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#8b5cf6",
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    height: 40,
     marginBottom: 8,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  routeOptionTransitSegment: {
+    backgroundColor: "#8b5cf6",
+    height: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  routeOptionWalkSegment: {
+    backgroundColor: "transparent",
+    height: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
   },
   routeOptionLetter: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: "white",
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 12,
+    position: "absolute",
+    left: 8,
   },
   routeOptionLetterText: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
     color: "#8b5cf6",
   },
-  routeOptionDots: {
-    flex: 1,
+  routeOptionWalkDots: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 4,
+    width: "100%",
+    paddingHorizontal: 4,
   },
-  routeOptionDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-  },
-  routeOptionDotActive: {
-    backgroundColor: "white",
+  routeOptionWalkDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#9ca3af",
   },
   routeOptionInfo: {
     flexDirection: "row",
@@ -1140,5 +1410,182 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#111827",
     fontWeight: "600",
+  },
+  // Detailed Route View Styles
+  detailedRouteContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 24,
+  },
+  backButton: {
+    paddingVertical: 8,
+    marginBottom: 16,
+  },
+  backButtonText: {
+    fontSize: 16,
+    color: "#8b5cf6",
+    fontWeight: "600",
+  },
+  arrivalInfo: {
+    marginBottom: 20,
+  },
+  arrivalTime: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#111827",
+    marginBottom: 4,
+  },
+  arrivalDetails: {
+    fontSize: 16,
+    color: "#111827",
+  },
+  routeTimelineBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 24,
+    position: "relative",
+    height: 40,
+  },
+  routeTimelineDots: {
+    flexDirection: "row",
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 8,
+  },
+  routeTimelineDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: "#d1d5db",
+  },
+  routeTimelineLetter: {
+    position: "absolute",
+    left: "50%",
+    marginLeft: -20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#8b5cf6",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  routeTimelineLetterText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "white",
+  },
+  routeSegmentsContainer: {
+    marginTop: 8,
+  },
+  transitSegment: {
+    flexDirection: "row",
+    marginBottom: 16,
+    backgroundColor: "#f3f4f6",
+    borderRadius: 8,
+    padding: 12,
+  },
+  transitLine: {
+    width: 20,
+    marginRight: 16,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    minHeight: 60,
+  },
+  transitLineTop: {
+    width: 4,
+    height: 12,
+    backgroundColor: "#8b5cf6",
+    borderTopLeftRadius: 2,
+    borderTopRightRadius: 2,
+    marginBottom: 4,
+  },
+  transitLineMiddle: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#8b5cf6",
+    marginVertical: 6,
+  },
+  transitLineBottom: {
+    width: 4,
+    height: 12,
+    backgroundColor: "#8b5cf6",
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+    marginTop: 4,
+  },
+  transitStops: {
+    flex: 1,
+  },
+  transitStop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  transitStopName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111827",
+    flex: 1,
+  },
+  transitStopTime: {
+    fontSize: 16,
+    color: "#111827",
+  },
+  transitStopNote: {
+    fontSize: 14,
+    color: "#6b7280",
+    fontStyle: "italic",
+    marginBottom: 8,
+  },
+  walkingSegment: {
+    flexDirection: "row",
+    marginBottom: 16,
+    alignItems: "flex-start",
+  },
+  walkingLineContainer: {
+    width: 2,
+    marginRight: 16,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    minHeight: 40,
+  },
+  walkingLineDot: {
+    width: 2,
+    height: 4,
+    backgroundColor: "#d1d5db",
+    marginBottom: 2,
+  },
+  walkingContent: {
+    flex: 1,
+  },
+  walkingInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  walkingIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  walkingTime: {
+    fontSize: 16,
+    color: "#111827",
+  },
+  locationInfo: {
+    marginTop: 4,
+  },
+  locationLabel: {
+    fontSize: 14,
+    color: "#6b7280",
+    marginBottom: 4,
+  },
+  locationAddress: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111827",
   },
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
   ActivityIndicator,
@@ -17,6 +17,7 @@ import type { Location } from "../types/locations";
 import {
   getStops,
   getNearbyTrips,
+  getStopsBetween,
   type Stop,
   type Plan,
   type PlanSegment,
@@ -53,6 +54,7 @@ export default function Map({
   const [routeSegments, setRouteSegments] = useState<RouteSegment[]>([]);
   const [nearestStop, setNearestStop] = useState<Stop | null>(null);
   const [region, setRegion] = useState<Region>(NYC_CENTER);
+  const [isLoadingRoute, setIsLoadingRoute] = useState(false);
 
   // Fetch stops from API on mount
   useEffect(() => {
@@ -92,50 +94,212 @@ export default function Map({
     }
   }, [userLocation, stops]);
 
+  // Fetch route from OSRM between two points
+  const fetchOSRMRoute = useCallback(
+    async (
+      fromLat: number,
+      fromLon: number,
+      toLat: number,
+      toLon: number
+    ): Promise<Array<{ latitude: number; longitude: number }>> => {
+      try {
+        // OSRM API format: lng,lat (longitude first!)
+        const url = `https://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson&alternatives=false`;
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error(`OSRM API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (data.code !== "Ok" || !data.routes || data.routes.length === 0) {
+          throw new Error("No route found");
+        }
+
+        // Extract coordinates from GeoJSON geometry
+        // OSRM returns coordinates as [lng, lat], convert to [lat, lng]
+        const coordinates = data.routes[0].geometry.coordinates;
+        return coordinates.map(([lng, lat]: [number, number]) => ({
+          latitude: lat,
+          longitude: lng,
+        }));
+      } catch (error) {
+        console.error("Error fetching route from OSRM:", error);
+        // Fallback to straight line
+        return [
+          { latitude: fromLat, longitude: fromLon },
+          { latitude: toLat, longitude: toLon },
+        ];
+      }
+    },
+    []
+  );
+
   // Convert plan segments to route segments for display
-  const convertPlanToSegments = (plan: Plan): RouteSegment[] => {
-    return plan.segments.map((segment: PlanSegment) => {
-      const points = [
-        { latitude: segment.from_lat, longitude: segment.from_lon },
-        { latitude: segment.to_lat, longitude: segment.to_lon },
-      ];
+  const convertPlanToSegments = useCallback(
+    async (plan: Plan): Promise<RouteSegment[]> => {
+      const segments: RouteSegment[] = [];
 
-      // Walking segments are gray and dashed, transit segments are colored and solid
-      const color = segment.type === "walk" ? "#6b7280" : "#3b82f6";
-      const isDashed = segment.type === "walk";
+      for (const segment of plan.segments) {
+        if (segment.type === "walk") {
+          // Walking segments: use OSRM for accurate walking paths
+          const points = await fetchOSRMRoute(
+            segment.from_lat,
+            segment.from_lon,
+            segment.to_lat,
+            segment.to_lon
+          );
+          segments.push({
+            points,
+            color: "#6b7280",
+            isDashed: true,
+          });
+        } else if (segment.type === "transit") {
+          // Transit segments: get all stops between from_stop and to_stop
+          try {
+            if (segment.trip_id && segment.from_stop_id && segment.to_stop_id) {
+              const routeStops = await getStopsBetween(
+                segment.trip_id,
+                segment.from_stop_id,
+                segment.to_stop_id,
+                stops
+              );
 
-      return { points, color, isDashed };
-    });
-  };
+              if (routeStops.length >= 2) {
+                // Build route through all stops using OSRM between consecutive stops
+                const allPoints: Array<{
+                  latitude: number;
+                  longitude: number;
+                }> = [];
+
+                for (let i = 0; i < routeStops.length - 1; i++) {
+                  const fromStop = routeStops[i];
+                  const toStop = routeStops[i + 1];
+                  const segmentPoints = await fetchOSRMRoute(
+                    fromStop.lat,
+                    fromStop.lon,
+                    toStop.lat,
+                    toStop.lon
+                  );
+
+                  // Add points (skip first point if not first segment to avoid duplicates)
+                  if (i === 0) {
+                    allPoints.push(...segmentPoints);
+                  } else {
+                    allPoints.push(...segmentPoints.slice(1));
+                  }
+                }
+
+                segments.push({
+                  points: allPoints,
+                  color: "#3b82f6",
+                  isDashed: false,
+                });
+              } else {
+                // Fallback: use OSRM between from and to coordinates
+                const points = await fetchOSRMRoute(
+                  segment.from_lat,
+                  segment.from_lon,
+                  segment.to_lat,
+                  segment.to_lon
+                );
+                segments.push({
+                  points,
+                  color: "#3b82f6",
+                  isDashed: false,
+                });
+              }
+            } else {
+              // Fallback: use OSRM between from and to coordinates
+              const points = await fetchOSRMRoute(
+                segment.from_lat,
+                segment.from_lon,
+                segment.to_lat,
+                segment.to_lon
+              );
+              segments.push({
+                points,
+                color: "#3b82f6",
+                isDashed: false,
+              });
+            }
+          } catch (error) {
+            console.error("Error fetching route stops:", error);
+            // Fallback: use OSRM between from and to coordinates
+            const points = await fetchOSRMRoute(
+              segment.from_lat,
+              segment.from_lon,
+              segment.to_lat,
+              segment.to_lon
+            );
+            segments.push({
+              points,
+              color: "#3b82f6",
+              isDashed: false,
+            });
+          }
+        }
+      }
+
+      return segments;
+    },
+    [fetchOSRMRoute, stops]
+  );
 
   // Display route when a specific route is selected
   useEffect(() => {
+    let cancelled = false;
+
     if (selectedRoute) {
-      const segments = convertPlanToSegments(selectedRoute);
-      setRouteSegments(segments);
+      const loadRoute = async () => {
+        setIsLoadingRoute(true);
+        try {
+          // Use convertPlanToSegments but don't include it in deps to avoid infinite loop
+          const segments = await convertPlanToSegments(selectedRoute);
 
-      // Fit map to show entire route
-      const allPoints = segments.flatMap(
-        (segment: RouteSegment) => segment.points
-      );
-      const lats = allPoints.map(
-        (p: { latitude: number; longitude: number }) => p.latitude
-      );
-      const lngs = allPoints.map(
-        (p: { latitude: number; longitude: number }) => p.longitude
-      );
+          if (!cancelled) {
+            setRouteSegments(segments);
+            setIsLoadingRoute(false);
 
-      const minLat = Math.min(...lats);
-      const maxLat = Math.max(...lats);
-      const minLng = Math.min(...lngs);
-      const maxLng = Math.max(...lngs);
+            // Fit map to show entire route
+            const allPoints = segments.flatMap(
+              (segment: RouteSegment) => segment.points
+            );
+            const lats = allPoints.map(
+              (p: { latitude: number; longitude: number }) => p.latitude
+            );
+            const lngs = allPoints.map(
+              (p: { latitude: number; longitude: number }) => p.longitude
+            );
 
-      setRegion({
-        latitude: (minLat + maxLat) / 2,
-        longitude: (minLng + maxLng) / 2,
-        latitudeDelta: Math.max((maxLat - minLat) * 1.5, 0.01),
-        longitudeDelta: Math.max((maxLng - minLng) * 1.5, 0.01),
-      });
+            const minLat = Math.min(...lats);
+            const maxLat = Math.max(...lats);
+            const minLng = Math.min(...lngs);
+            const maxLng = Math.max(...lngs);
+
+            setRegion({
+              latitude: (minLat + maxLat) / 2,
+              longitude: (minLng + maxLng) / 2,
+              latitudeDelta: Math.max((maxLat - minLat) * 1.5, 0.01),
+              longitudeDelta: Math.max((maxLng - minLng) * 1.5, 0.01),
+            });
+          }
+        } catch (error) {
+          console.error("Error loading route:", error);
+          if (!cancelled) {
+            setRouteSegments([]);
+            setIsLoadingRoute(false);
+          }
+        }
+      };
+
+      loadRoute();
+
+      return () => {
+        cancelled = true;
+      };
     } else if (selectedLocation) {
       // Center on selected location (but don't show route yet)
       setRegion({
@@ -157,7 +321,8 @@ export default function Map({
     } else {
       setRouteSegments([]);
     }
-  }, [userLocation, selectedLocation, selectedRoute]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userLocation, selectedLocation, selectedRoute, stops]);
 
   return (
     <View style={styles.container}>
