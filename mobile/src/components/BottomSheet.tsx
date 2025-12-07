@@ -14,6 +14,7 @@ import {
   PanResponder,
   Animated,
   Dimensions,
+  ScrollView,
 } from "react-native";
 import {
   getNearbyTrips,
@@ -73,6 +74,7 @@ interface RouteOption {
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const COLLAPSED_HEIGHT = 60; // Height when collapsed (just the button)
 const EXPANDED_HEIGHT = SCREEN_HEIGHT * 0.9; // Height when expanded
+const DETAILED_ROUTE_HEIGHT = SCREEN_HEIGHT * 0.5; // Height when showing detailed route (50% of screen)
 const MIN_SWIPE_DISTANCE = 50; // Minimum distance to trigger snap
 
 export default function BottomSheet({
@@ -497,32 +499,34 @@ export default function BottomSheet({
   const renderContent = () => {
     return (
       <View style={styles.contentWrapper}>
-        {/* Search Bar */}
-        <View style={styles.searchContainer}>
-          <View style={styles.searchIcon}>
-            <Text style={styles.searchIconText}>🔍</Text>
+        {/* Search Bar - Hide when showing detailed route */}
+        {!selectedRouteOption && (
+          <View style={styles.searchContainer}>
+            <View style={styles.searchIcon}>
+              <Text style={styles.searchIconText}>🔍</Text>
+            </View>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Where to?"
+              placeholderTextColor="#9ca3af"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              onFocus={handleSearchFocus}
+              returnKeyType="search"
+              autoFocus={isSearchFocused}
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+            />
+            {isSearchFocused && (
+              <TouchableOpacity
+                onPress={handleCloseSearch}
+                style={styles.closeButton}
+              >
+                <Text style={styles.closeButtonText}>✕</Text>
+              </TouchableOpacity>
+            )}
           </View>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Where to?"
-            placeholderTextColor="#9ca3af"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onFocus={handleSearchFocus}
-            returnKeyType="search"
-            autoFocus={isSearchFocused}
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          {isSearchFocused && (
-            <TouchableOpacity
-              onPress={handleCloseSearch}
-              style={styles.closeButton}
-            >
-              <Text style={styles.closeButtonText}>✕</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+        )}
 
         {/* Search Results */}
         {isSearchFocused && showSearchResults && (
@@ -566,51 +570,59 @@ export default function BottomSheet({
           </View>
         )}
 
-        {/* Destination Display - Show when location is selected */}
-        {!isSearchFocused && !showSearchResults && selectedLocation && (
-          <View style={styles.destinationContainer}>
-            <View style={styles.destinationInput}>
-              <Text style={styles.destinationIcon}>📍</Text>
-              <Text style={styles.destinationText} numberOfLines={1}>
-                {selectedLocation.name}
-              </Text>
-              <TouchableOpacity
-                onPress={handleClearDestination}
-                style={styles.clearButton}
-              >
-                <Text style={styles.clearButtonText}>✕</Text>
-              </TouchableOpacity>
+        {/* Destination Display - Show when location is selected but not in detailed route view */}
+        {!isSearchFocused &&
+          !showSearchResults &&
+          selectedLocation &&
+          !selectedRouteOption && (
+            <View style={styles.destinationContainer}>
+              <View style={styles.destinationInput}>
+                <Text style={styles.destinationIcon}>📍</Text>
+                <Text style={styles.destinationText} numberOfLines={1}>
+                  {selectedLocation.name}
+                </Text>
+                <TouchableOpacity
+                  onPress={handleClearDestination}
+                  style={styles.clearButton}
+                >
+                  <Text style={styles.clearButtonText}>✕</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-        )}
+          )}
 
         {/* Detailed Route View - Show when a route is selected */}
         {!isSearchFocused &&
           !showSearchResults &&
           selectedLocation &&
           selectedRouteOption && (
-            <View style={styles.detailedRouteContainer}>
-              {/* Back button */}
-              <TouchableOpacity
-                onPress={handleBackToRoutes}
-                style={styles.backButton}
-              >
-                <Text style={styles.backButtonText}>← Back</Text>
-              </TouchableOpacity>
-
-              {/* Arrival info */}
-              <View style={styles.arrivalInfo}>
-                <Text style={styles.arrivalTime}>
-                  Arrive at{" "}
-                  {calculateArrivalTime(
-                    selectedRouteOption.plan.departure_time,
-                    selectedRouteOption.totalDuration
-                  )}
-                </Text>
-                <Text style={styles.arrivalDetails}>
-                  {selectedRouteOption.totalDuration} min · Go in{" "}
-                  {selectedRouteOption.minutesUntilDeparture} mins
-                </Text>
+            <ScrollView
+              style={styles.detailedRouteScrollView}
+              contentContainerStyle={styles.detailedRouteContainer}
+              showsVerticalScrollIndicator={true}
+            >
+              {/* Arrival info with back button on the right */}
+              <View style={styles.arrivalHeader}>
+                <View style={styles.arrivalInfo}>
+                  <Text style={styles.arrivalTime}>
+                    Arrive at{" "}
+                    {calculateArrivalTime(
+                      selectedRouteOption.plan.departure_time,
+                      selectedRouteOption.totalDuration
+                    )}
+                  </Text>
+                  <Text style={styles.arrivalDetails}>
+                    {selectedRouteOption.totalDuration} min · Go in{" "}
+                    {selectedRouteOption.minutesUntilDeparture} mins
+                  </Text>
+                </View>
+                {/* Back button */}
+                <TouchableOpacity
+                  onPress={handleBackToRoutes}
+                  style={styles.backButtonRight}
+                >
+                  <Text style={styles.backButtonText}>← Back</Text>
+                </TouchableOpacity>
               </View>
 
               {/* Timeline with route letter */}
@@ -735,7 +747,35 @@ export default function BottomSheet({
                   }
                 })}
               </View>
-            </View>
+
+              {/* Other Options Section */}
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>OTHER OPTIONS</Text>
+                {selectedLocation && walkingTime !== null && (
+                  <TouchableOpacity style={styles.walkOption}>
+                    <Text style={styles.walkOptionText}>Walk</Text>
+                    <View style={styles.walkOptionLine}>
+                      {Array.from({ length: 20 }).map((_, i) => {
+                        return <View key={i} style={styles.walkDot} />;
+                      })}
+                    </View>
+                    <Text style={styles.walkOptionTime}>{walkingTime} min</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={styles.optionItem}>
+                  <View style={styles.optionIcon}>
+                    <Text style={styles.optionIconText}>🚗</Text>
+                  </View>
+                  <View style={styles.optionInfo}>
+                    <Text style={styles.optionName}>NYU Safe Ride</Text>
+                    <Text style={styles.optionDescription}>
+                      Available until 7 AM
+                    </Text>
+                  </View>
+                  <Text style={styles.externalLink}>↗</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           )}
 
         {/* Route Options - Show when location is selected but no route selected */}
@@ -878,8 +918,8 @@ export default function BottomSheet({
           </View>
         )}
 
-        {/* Other Options Section - Only show when not searching */}
-        {!isSearchFocused && !showSearchResults && (
+        {/* Other Options Section - Only show when not searching and not in detailed route view */}
+        {!isSearchFocused && !showSearchResults && !selectedRouteOption && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>OTHER OPTIONS</Text>
             {selectedLocation && walkingTime !== null && (
@@ -962,12 +1002,17 @@ export default function BottomSheet({
   }
 
   // Expanded bottom sheet with swipe gesture
+  // Use smaller height when showing detailed route view
+  const sheetHeight = selectedRouteOption
+    ? DETAILED_ROUTE_HEIGHT
+    : EXPANDED_HEIGHT;
+
   return (
     <Animated.View
       style={[
         styles.animatedContainer,
         {
-          height: EXPANDED_HEIGHT,
+          height: sheetHeight,
           transform: [{ translateY }],
         },
       ]}
@@ -1412,22 +1457,36 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   // Detailed Route View Styles
+  detailedRouteScrollView: {
+    flex: 1,
+  },
   detailedRouteContainer: {
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 24,
   },
+  arrivalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 20,
+  },
+  arrivalInfo: {
+    flex: 1,
+  },
   backButton: {
     paddingVertical: 8,
     marginBottom: 16,
+  },
+  backButtonRight: {
+    paddingVertical: 8,
+    paddingLeft: 16,
+    alignSelf: "flex-start",
   },
   backButtonText: {
     fontSize: 16,
     color: "#8b5cf6",
     fontWeight: "600",
-  },
-  arrivalInfo: {
-    marginBottom: 20,
   },
   arrivalTime: {
     fontSize: 24,
