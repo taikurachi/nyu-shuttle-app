@@ -67,7 +67,8 @@ const PRESET_LOCATIONS: Location[] = [
 interface RouteOption {
   plan: Plan;
   routeLetter: string;
-  departureTime: string;
+  departureDate: Date;
+  departureTimeLabel: string;
   minutesUntilDeparture: number;
   totalDuration: number;
 }
@@ -184,21 +185,11 @@ export default function BottomSheet({
           const options: RouteOption[] = plansWithTransit
             .slice(0, 3)
             .map((plan, index) => {
-              // Parse departure time (format: HH:MM:SS or HH:MM)
-              const departureTimeStr = plan.departure_time;
-              const timeParts = departureTimeStr.split(":");
-              const hours = parseInt(timeParts[0], 10);
-              const minutes = parseInt(timeParts[1] || "0", 10);
-              const seconds = parseInt(timeParts[2] || "0", 10);
-
-              // Create departure date for today
-              const departureDate = new Date(now);
-              departureDate.setHours(hours, minutes, seconds, 0);
-
-              // If departure time is in the past, assume it's for tomorrow
-              if (departureDate.getTime() < now.getTime()) {
-                departureDate.setDate(departureDate.getDate() + 1);
-              }
+              // Parse departure time robustly (supports ISO or HH:MM(:SS))
+              const departureDate = parseTimeStringToDate(
+                plan.departure_time,
+                now
+              );
 
               // Calculate difference
               const finalDiffMs = departureDate.getTime() - now.getTime();
@@ -207,12 +198,8 @@ export default function BottomSheet({
                 Math.round(finalDiffMs / (1000 * 60))
               );
 
-              // Format departure time
-              const hours12 = departureDate.getHours() % 12 || 12;
-              const ampm = departureDate.getHours() >= 12 ? "PM" : "AM";
-              const departureTime = `${hours12}:${String(
-                departureDate.getMinutes()
-              ).padStart(2, "0")} ${ampm}`;
+              // Display-friendly departure time
+              const departureTimeLabel = formatTimeFromDate(departureDate);
 
               // Calculate totalDuration from segments if plan.estimated_duration_minutes is missing or 0
               let totalDuration = plan.estimated_duration_minutes || 0;
@@ -233,7 +220,8 @@ export default function BottomSheet({
               return {
                 plan,
                 routeLetter: String.fromCharCode(65 + index), // A, B, C
-                departureTime,
+                departureDate,
+                departureTimeLabel,
                 minutesUntilDeparture,
                 totalDuration,
               };
@@ -258,13 +246,29 @@ export default function BottomSheet({
               userLocation.latitude,
               userLocation.longitude,
               selectedLocation.lat,
-              selectedLocation.lng
+              selectedLocation.lng,
+              new Date().toISOString()
             );
             processRouteOptions(plans);
           } catch (error) {
-            console.error("Error fetching route options:", error);
-            setRouteOptions([]);
-            setIsLoadingRouteOptions(false);
+            console.error("Error fetching route options (timestamped):", error);
+            // Fallback: retry without timestamp in case backend rejects it
+            try {
+              const fallbackPlans = await planRoute(
+                userLocation.latitude,
+                userLocation.longitude,
+                selectedLocation.lat,
+                selectedLocation.lng
+              );
+              processRouteOptions(fallbackPlans);
+            } catch (fallbackError) {
+              console.error(
+                "Fallback error fetching route options:",
+                fallbackError
+              );
+              setRouteOptions([]);
+              setIsLoadingRouteOptions(false);
+            }
           }
         };
         fetchRouteOptions();
@@ -284,7 +288,8 @@ export default function BottomSheet({
           const trips = await getNearbyTrips(
             userLocation.latitude,
             userLocation.longitude,
-            1000
+            1000,
+            new Date().toISOString()
           );
 
           // Group trips by route and get the earliest one for each route
@@ -340,7 +345,75 @@ export default function BottomSheet({
 
           setNearbyRoutes(routes);
         } catch (error) {
-          console.error("Error fetching nearby routes:", error);
+          console.error("Error fetching nearby routes (timestamped):", error);
+          try {
+            const trips = await getNearbyTrips(
+              userLocation.latitude,
+              userLocation.longitude,
+              1000
+            );
+
+            // Group trips by route and get the earliest one for each route
+            const routeMap = new Map<string, Trip>();
+            trips.forEach((trip) => {
+              const key = trip.route_short_name;
+              if (!routeMap.has(key)) {
+                routeMap.set(key, trip);
+              } else {
+                const existing = routeMap.get(key)!;
+                if (
+                  trip.nearby_stop_arrival_time <
+                  existing.nearby_stop_arrival_time
+                ) {
+                  routeMap.set(key, trip);
+                }
+              }
+            });
+
+            // Convert to RouteItem format
+            const routes: RouteItem[] = Array.from(routeMap.values())
+              .map((trip) => {
+                const stop = stops.find(
+                  (s) => s.stop_id === trip.nearby_stop_id
+                );
+                const address = stop?.stop_name || "Unknown Stop";
+
+                // Calculate minutes until arrival
+                const arrivalTime = trip.nearby_stop_arrival_time;
+                const now = new Date();
+                const [hours, minutes, seconds] = arrivalTime
+                  .split(":")
+                  .map(Number);
+                const arrivalDate = new Date(now);
+                arrivalDate.setHours(hours, minutes || 0, seconds || 0, 0);
+
+                // If arrival time is earlier than now, assume it's tomorrow
+                if (arrivalDate < now) {
+                  arrivalDate.setDate(arrivalDate.getDate() + 1);
+                }
+
+                const diffMs = arrivalDate.getTime() - now.getTime();
+                const diffMins = Math.max(0, Math.round(diffMs / (1000 * 60)));
+
+                return {
+                  routeShortName: trip.route_short_name,
+                  routeLongName: trip.route_long_name,
+                  address,
+                  minutes: diffMins,
+                  trip,
+                };
+              })
+              .sort((a, b) => a.minutes - b.minutes)
+              .slice(0, 3); // Show top 3 routes
+
+            setNearbyRoutes(routes);
+          } catch (fallbackError) {
+            console.error(
+              "Fallback error fetching nearby routes:",
+              fallbackError
+            );
+            setNearbyRoutes([]);
+          }
         } finally {
           setIsLoadingRoutes(false);
         }
@@ -401,26 +474,53 @@ export default function BottomSheet({
     setSelectedRouteOption(null);
   };
 
-  const formatTime = (timeString: string): string => {
-    const [hours, minutes] = timeString.split(":").map(Number);
-    const date = new Date();
-    date.setHours(hours, minutes || 0, 0, 0);
+  const formatTimeFromDate = (date: Date): string => {
     const hours12 = date.getHours() % 12 || 12;
     const ampm = date.getHours() >= 12 ? "PM" : "AM";
     return `${hours12}:${String(date.getMinutes()).padStart(2, "0")} ${ampm}`;
   };
 
+  const parseTimeStringToDate = (
+    timeString: string,
+    referenceDate: Date
+  ): Date => {
+    // Try ISO or full datetime first
+    const parsed = new Date(timeString);
+    if (!isNaN(parsed.getTime())) {
+      return parsed;
+    }
+
+    // Fallback: treat as HH:MM(:SS) today and roll to next day if needed
+    const [hours, minutes, seconds] = timeString.split(":").map(Number);
+    const date = new Date(referenceDate);
+    date.setHours(hours || 0, minutes || 0, seconds || 0, 0);
+    if (date.getTime() < referenceDate.getTime()) {
+      const diffMs = referenceDate.getTime() - date.getTime();
+      // Only roll over to the next day if we're clearly past the time (buffer 5 mins)
+      if (diffMs > 5 * 60 * 1000) {
+        date.setDate(date.getDate() + 1);
+      }
+    }
+    return date;
+  };
+
+  const formatTime = (timeString: string): string => {
+    const now = new Date();
+    const date = parseTimeStringToDate(timeString, now);
+    return formatTimeFromDate(date);
+  };
+
   const calculateArrivalTime = (
-    departureTime: string,
+    departureTime: string | Date,
     durationMinutes: number
   ): string => {
-    const [hours, minutes] = departureTime.split(":").map(Number);
-    const date = new Date();
-    date.setHours(hours, minutes || 0, 0, 0);
-    date.setMinutes(date.getMinutes() + durationMinutes);
-    const hours12 = date.getHours() % 12 || 12;
-    const ampm = date.getHours() >= 12 ? "PM" : "AM";
-    return `${hours12}:${String(date.getMinutes()).padStart(2, "0")} ${ampm}`;
+    const now = new Date();
+    const baseDate =
+      departureTime instanceof Date
+        ? new Date(departureTime)
+        : parseTimeStringToDate(departureTime, now);
+    baseDate.setMinutes(baseDate.getMinutes() + durationMinutes);
+    return formatTimeFromDate(baseDate);
   };
 
   const handleClearDestination = () => {
@@ -526,7 +626,8 @@ export default function BottomSheet({
     Keyboard.dismiss();
   };
 
-  const getRouteColor = (_routeName: string): string => {
+  const getRouteColor = (routeName?: string): string => {
+    void routeName; // currently a single brand color
     // Purple color for route icons
     return "#8b5cf6";
   };
@@ -642,7 +743,7 @@ export default function BottomSheet({
                   <Text style={styles.arrivalTime}>
                     Arrive at{" "}
                     {calculateArrivalTime(
-                      selectedRouteOption.plan.departure_time,
+                      selectedRouteOption.departureDate,
                       selectedRouteOption.totalDuration
                     )}
                   </Text>
@@ -828,180 +929,187 @@ export default function BottomSheet({
             </View>
           ) : routeOptions.length > 0 ? (
             <View style={styles.section}>
-              {routeOptions.map((option, index) => {
-                // Calculate segment proportions
-                // Use totalDuration from the option (already calculated with fallback)
-                const totalDuration = option.totalDuration;
-                const segments = option.plan.segments;
+              {routeOptions
+                .filter((option) => option.minutesUntilDeparture <= 1000)
+                .map((option, index) => {
+                  // Calculate segment proportions
+                  // Use totalDuration from the option (already calculated with fallback)
+                  const totalDuration = option.totalDuration;
+                  const segments = option.plan.segments;
 
-                return (
-                  <TouchableOpacity
-                    key={index}
-                    style={styles.routeOptionContainer}
-                    onPress={() => handleRouteOptionSelect(option)}
-                  >
-                    <View style={styles.routeOptionTimeline}>
-                      {(() => {
-                        // Calculate minimum widths to ensure even spacing
-                        const MIN_TRANSIT_WIDTH_PERCENT = 15; // Minimum 15% for transit segments
-                        const MIN_WALK_WIDTH_PERCENT = 8; // Minimum 8% for walk segments
+                  return (
+                    <TouchableOpacity
+                      key={index}
+                      style={styles.routeOptionContainer}
+                      onPress={() => handleRouteOptionSelect(option)}
+                    >
+                      <View style={styles.routeOptionTimeline}>
+                        {(() => {
+                          // Calculate minimum widths to ensure even spacing
+                          const MIN_TRANSIT_WIDTH_PERCENT = 15; // Minimum 15% for transit segments
+                          const MIN_WALK_WIDTH_PERCENT = 8; // Minimum 8% for walk segments
 
-                        // Step 1: Calculate true proportional widths based on duration
-                        // Guard against division by zero
-                        const safeTotalDuration =
-                          totalDuration > 0 ? totalDuration : 1;
-                        const trueProportionalWidths = segments.map(
-                          (segment) => {
-                            const isTransit = segment.type === "transit";
-                            const baseWidth =
-                              (segment.duration_minutes / safeTotalDuration) *
-                              100;
-                            return {
-                              width: baseWidth,
-                              isTransit,
-                              duration: segment.duration_minutes,
-                            };
+                          // Step 1: Calculate true proportional widths based on duration
+                          // Guard against division by zero
+                          const safeTotalDuration =
+                            totalDuration > 0 ? totalDuration : 1;
+                          const trueProportionalWidths = segments.map(
+                            (segment) => {
+                              const isTransit = segment.type === "transit";
+                              const baseWidth =
+                                (segment.duration_minutes / safeTotalDuration) *
+                                100;
+                              return {
+                                width: baseWidth,
+                                isTransit,
+                                duration: segment.duration_minutes,
+                              };
+                            }
+                          );
+
+                          // Step 2: Find the smallest transit segment
+                          const transitSegments = trueProportionalWidths.filter(
+                            (seg) => seg.isTransit
+                          );
+                          const smallestTransitWidth =
+                            transitSegments.length > 0
+                              ? Math.min(
+                                  ...transitSegments.map((seg) => seg.width)
+                                )
+                              : MIN_TRANSIT_WIDTH_PERCENT;
+
+                          // Step 3: If smallest transit is below minimum, scale up ALL segments proportionally
+                          let scaleFactor = 1;
+                          if (
+                            smallestTransitWidth < MIN_TRANSIT_WIDTH_PERCENT
+                          ) {
+                            // Calculate scale factor to make smallest transit reach minimum
+                            scaleFactor =
+                              MIN_TRANSIT_WIDTH_PERCENT / smallestTransitWidth;
                           }
-                        );
 
-                        // Step 2: Find the smallest transit segment
-                        const transitSegments = trueProportionalWidths.filter(
-                          (seg) => seg.isTransit
-                        );
-                        const smallestTransitWidth =
-                          transitSegments.length > 0
-                            ? Math.min(
-                                ...transitSegments.map((seg) => seg.width)
-                              )
-                            : MIN_TRANSIT_WIDTH_PERCENT;
-
-                        // Step 3: If smallest transit is below minimum, scale up ALL segments proportionally
-                        let scaleFactor = 1;
-                        if (smallestTransitWidth < MIN_TRANSIT_WIDTH_PERCENT) {
-                          // Calculate scale factor to make smallest transit reach minimum
-                          scaleFactor =
-                            MIN_TRANSIT_WIDTH_PERCENT / smallestTransitWidth;
-                        }
-
-                        // Step 4: Apply scale factor to all segments (maintains visual proportionality)
-                        const scaledWidths = trueProportionalWidths.map(
-                          (seg) => ({
-                            ...seg,
-                            width: seg.width * scaleFactor,
-                          })
-                        );
-
-                        // Step 5: Apply minimums to walk segments (but transit is already at minimum or above)
-                        const adjustedWidths = scaledWidths.map((seg) => {
-                          if (!seg.isTransit) {
-                            // For walk segments, ensure minimum
-                            return {
+                          // Step 4: Apply scale factor to all segments (maintains visual proportionality)
+                          const scaledWidths = trueProportionalWidths.map(
+                            (seg) => ({
                               ...seg,
-                              width: Math.max(
-                                seg.width,
-                                MIN_WALK_WIDTH_PERCENT
-                              ),
-                            };
+                              width: seg.width * scaleFactor,
+                            })
+                          );
+
+                          // Step 5: Apply minimums to walk segments (but transit is already at minimum or above)
+                          const adjustedWidths = scaledWidths.map((seg) => {
+                            if (!seg.isTransit) {
+                              // For walk segments, ensure minimum
+                              return {
+                                ...seg,
+                                width: Math.max(
+                                  seg.width,
+                                  MIN_WALK_WIDTH_PERCENT
+                                ),
+                              };
+                            }
+                            // Transit segments are already at minimum or above
+                            return seg;
+                          });
+
+                          // Step 6: If total exceeds 100%, scale down proportionally (maintains ratios)
+                          const totalWidth = adjustedWidths.reduce(
+                            (sum, seg) => sum + seg.width,
+                            0
+                          );
+
+                          let finalWidths = adjustedWidths;
+                          if (totalWidth > 100) {
+                            const finalScaleFactor = 100 / totalWidth;
+                            finalWidths = adjustedWidths.map((seg) => ({
+                              ...seg,
+                              width: seg.width * finalScaleFactor,
+                            }));
                           }
-                          // Transit segments are already at minimum or above
-                          return seg;
-                        });
 
-                        // Step 6: If total exceeds 100%, scale down proportionally (maintains ratios)
-                        const totalWidth = adjustedWidths.reduce(
-                          (sum, seg) => sum + seg.width,
-                          0
-                        );
-
-                        let finalWidths = adjustedWidths;
-                        if (totalWidth > 100) {
-                          const finalScaleFactor = 100 / totalWidth;
-                          finalWidths = adjustedWidths.map((seg) => ({
-                            ...seg,
-                            width: seg.width * finalScaleFactor,
-                          }));
-                        }
-
-                        return segments.map((segment, segIndex) => {
-                          const isTransit = segment.type === "transit";
-                          const isFirstTransit =
-                            isTransit &&
-                            segments
-                              .slice(0, segIndex)
-                              .every((s) => s.type === "walk");
-                          // Ensure finalWidth is valid and within bounds
-                          const finalWidth = finalWidths[segIndex]?.width ?? 0;
-                          const safeFinalWidth = Math.max(
-                            0,
-                            Math.min(
-                              100,
-                              isNaN(finalWidth) ? 0 : finalWidth || 0
-                            )
-                          );
-                          // Ensure safeFinalWidth is a valid number for array length calculation
-                          const safeArrayLength = Math.max(
-                            4,
-                            Math.min(
-                              100,
-                              Math.floor(
-                                isNaN(safeFinalWidth) ? 0 : safeFinalWidth / 3
+                          return segments.map((segment, segIndex) => {
+                            const isTransit = segment.type === "transit";
+                            const isFirstTransit =
+                              isTransit &&
+                              segments
+                                .slice(0, segIndex)
+                                .every((s) => s.type === "walk");
+                            // Ensure finalWidth is valid and within bounds
+                            const finalWidth =
+                              finalWidths[segIndex]?.width ?? 0;
+                            const safeFinalWidth = Math.max(
+                              0,
+                              Math.min(
+                                100,
+                                isNaN(finalWidth) ? 0 : finalWidth || 0
                               )
-                            )
-                          );
+                            );
+                            // Ensure safeFinalWidth is a valid number for array length calculation
+                            const safeArrayLength = Math.max(
+                              4,
+                              Math.min(
+                                100,
+                                Math.floor(
+                                  isNaN(safeFinalWidth) ? 0 : safeFinalWidth / 3
+                                )
+                              )
+                            );
 
-                          return (
-                            <View
-                              key={segIndex}
-                              style={[
-                                isTransit
-                                  ? styles.routeOptionTransitSegment
-                                  : styles.routeOptionWalkSegment,
-                                {
-                                  flex: safeFinalWidth, // Use flex instead of width percentage
-                                  marginLeft: segIndex === 0 ? 0 : 1, // No margin on first segment, minimal on others
-                                  marginRight:
-                                    segIndex < segments.length - 1 ? 1 : 0, // Minimal spacing between segments
-                                },
-                              ]}
-                            >
-                              {isTransit && isFirstTransit && (
-                                <View style={styles.routeOptionLetter}>
-                                  <Text style={styles.routeOptionLetterText}>
-                                    {option.routeLetter}
-                                  </Text>
-                                </View>
-                              )}
-                              {!isTransit && (
-                                <View style={styles.routeOptionWalkDots}>
-                                  {Array.from({
-                                    length: safeArrayLength,
-                                  }).map((_, i) => (
-                                    <View
-                                      key={i}
-                                      style={styles.routeOptionWalkDot}
-                                    />
-                                  ))}
-                                </View>
-                              )}
-                            </View>
-                          );
-                        });
-                      })()}
-                    </View>
-                    <View style={styles.routeOptionInfo}>
-                      <Text style={styles.routeOptionDeparture}>
-                        Go in {option.minutesUntilDeparture} mins
-                      </Text>
-                      <Text style={styles.routeOptionDuration}>
-                        {option.totalDuration} min
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
+                            return (
+                              <View
+                                key={segIndex}
+                                style={[
+                                  isTransit
+                                    ? styles.routeOptionTransitSegment
+                                    : styles.routeOptionWalkSegment,
+                                  {
+                                    flex: safeFinalWidth, // Use flex instead of width percentage
+                                    marginLeft: segIndex === 0 ? 0 : 1, // No margin on first segment, minimal on others
+                                    marginRight:
+                                      segIndex < segments.length - 1 ? 1 : 0, // Minimal spacing between segments
+                                  },
+                                ]}
+                              >
+                                {isTransit && isFirstTransit && (
+                                  <View style={styles.routeOptionLetter}>
+                                    <Text style={styles.routeOptionLetterText}>
+                                      {option.routeLetter}
+                                    </Text>
+                                  </View>
+                                )}
+                                {!isTransit && (
+                                  <View style={styles.routeOptionWalkDots}>
+                                    {Array.from({
+                                      length: safeArrayLength,
+                                    }).map((_, i) => (
+                                      <View
+                                        key={i}
+                                        style={styles.routeOptionWalkDot}
+                                      />
+                                    ))}
+                                  </View>
+                                )}
+                              </View>
+                            );
+                          });
+                        })()}
+                      </View>
+                      <View style={styles.routeOptionInfo}>
+                        <Text style={styles.routeOptionDeparture}>
+                          Go in {option.minutesUntilDeparture} mins
+                        </Text>
+                        <Text style={styles.routeOptionDuration}>
+                          {option.totalDuration} min
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
             </View>
           ) : (
-            <View />
+            <View style={styles.section}>
+              <Text style={styles.noRoutesText}>No routes available</Text>
+            </View>
           ))}
 
         {/* Nearby Routes Section - Only show when not searching and no destination */}
@@ -1016,38 +1124,42 @@ export default function BottomSheet({
               />
             ) : nearbyRoutes.length > 0 ? (
               <View style={styles.routesList}>
-                {nearbyRoutes.map((route, index) => (
-                  <TouchableOpacity
-                    key={`${route.routeShortName}-${index}`}
-                    style={styles.routeItem}
-                    onPress={() => handleRoutePress(route)}
-                  >
-                    <View
-                      style={[
-                        styles.routeIcon,
-                        {
-                          backgroundColor: getRouteColor(route.routeShortName),
-                        },
-                      ]}
+                {nearbyRoutes
+                  .filter((route) => route.minutes <= 1000)
+                  .map((route, index) => (
+                    <TouchableOpacity
+                      key={`${route.routeShortName}-${index}`}
+                      style={styles.routeItem}
+                      onPress={() => handleRoutePress(route)}
                     >
-                      <Text style={styles.routeIconText}>
-                        {route.routeShortName}
-                      </Text>
-                    </View>
-                    <View style={styles.routeInfo}>
-                      <Text style={styles.routeName}>
-                        {route.routeLongName}
-                      </Text>
-                      <Text style={styles.routeAddress}>{route.address}</Text>
-                    </View>
-                    <View style={styles.routeTime}>
-                      <Text style={styles.routeTimeNumber}>
-                        {route.minutes}
-                      </Text>
-                      <Text style={styles.routeTimeLabel}>mins</Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+                      <View
+                        style={[
+                          styles.routeIcon,
+                          {
+                            backgroundColor: getRouteColor(
+                              route.routeShortName
+                            ),
+                          },
+                        ]}
+                      >
+                        <Text style={styles.routeIconText}>
+                          {route.routeShortName}
+                        </Text>
+                      </View>
+                      <View style={styles.routeInfo}>
+                        <Text style={styles.routeName}>
+                          {route.routeLongName}
+                        </Text>
+                        <Text style={styles.routeAddress}>{route.address}</Text>
+                      </View>
+                      <View style={styles.routeTime}>
+                        <Text style={styles.routeTimeNumber}>
+                          {route.minutes}
+                        </Text>
+                        <Text style={styles.routeTimeLabel}>mins</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
               </View>
             ) : (
               <Text style={styles.noRoutesText}>No nearby routes found</Text>
@@ -1280,9 +1392,6 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   contentWrapper: {
-    flex: 1,
-  },
-  modalContentWrapper: {
     flex: 1,
   },
   expandedContainer: {
