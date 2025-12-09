@@ -31,6 +31,7 @@ interface BottomSheetProps {
   selectedLocation: Location | null;
   onLocationSelect: (location: Location | null) => void;
   onRouteSelect: (plan: Plan) => void;
+  aiPlans?: Plan[] | null; // Optional AI-generated plans to display
 }
 
 interface RouteItem {
@@ -82,6 +83,7 @@ export default function BottomSheet({
   selectedLocation,
   onLocationSelect,
   onRouteSelect,
+  aiPlans,
 }: BottomSheetProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [nearbyRoutes, setNearbyRoutes] = useState<RouteItem[]>([]);
@@ -157,19 +159,12 @@ export default function BottomSheet({
     return Math.round(distance / walkingSpeedMetersPerMinute);
   };
 
-  // Fetch route options when a location is selected
+  // Fetch route options when a location is selected, or use AI plans if provided
   useEffect(() => {
     if (userLocation && selectedLocation) {
-      const fetchRouteOptions = async () => {
+      const processRouteOptions = async (plansToUse: Plan[]) => {
         setIsLoadingRouteOptions(true);
         try {
-          const plans = await planRoute(
-            userLocation.latitude,
-            userLocation.longitude,
-            selectedLocation.lat,
-            selectedLocation.lng
-          );
-
           // Calculate walking time
           const walkTime = calculateWalkingTime(
             userLocation.latitude,
@@ -180,7 +175,7 @@ export default function BottomSheet({
           setWalkingTime(walkTime);
 
           // Filter plans to only include those with at least one transit segment
-          const plansWithTransit = plans.filter((plan) =>
+          const plansWithTransit = plansToUse.filter((plan) =>
             plan.segments.some((segment) => segment.type === "transit")
           );
 
@@ -246,19 +241,39 @@ export default function BottomSheet({
 
           setRouteOptions(options);
         } catch (error) {
-          console.error("Error fetching route options:", error);
+          console.error("Error processing route options:", error);
           setRouteOptions([]);
         } finally {
           setIsLoadingRouteOptions(false);
         }
       };
 
-      fetchRouteOptions();
+      // Use AI plans if provided, otherwise fetch from API
+      if (aiPlans && aiPlans.length > 0) {
+        processRouteOptions(aiPlans);
+      } else {
+        const fetchRouteOptions = async () => {
+          try {
+            const plans = await planRoute(
+              userLocation.latitude,
+              userLocation.longitude,
+              selectedLocation.lat,
+              selectedLocation.lng
+            );
+            processRouteOptions(plans);
+          } catch (error) {
+            console.error("Error fetching route options:", error);
+            setRouteOptions([]);
+            setIsLoadingRouteOptions(false);
+          }
+        };
+        fetchRouteOptions();
+      }
     } else {
       setRouteOptions([]);
       setWalkingTime(null);
     }
-  }, [userLocation, selectedLocation]);
+  }, [userLocation, selectedLocation, aiPlans]);
 
   // Fetch nearby routes when user location is available (only when no destination selected)
   useEffect(() => {
@@ -914,7 +929,25 @@ export default function BottomSheet({
                             segments
                               .slice(0, segIndex)
                               .every((s) => s.type === "walk");
-                          const finalWidth = finalWidths[segIndex].width;
+                          // Ensure finalWidth is valid and within bounds
+                          const finalWidth = finalWidths[segIndex]?.width ?? 0;
+                          const safeFinalWidth = Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              isNaN(finalWidth) ? 0 : finalWidth || 0
+                            )
+                          );
+                          // Ensure safeFinalWidth is a valid number for array length calculation
+                          const safeArrayLength = Math.max(
+                            4,
+                            Math.min(
+                              100,
+                              Math.floor(
+                                isNaN(safeFinalWidth) ? 0 : safeFinalWidth / 3
+                              )
+                            )
+                          );
 
                           return (
                             <View
@@ -924,7 +957,7 @@ export default function BottomSheet({
                                   ? styles.routeOptionTransitSegment
                                   : styles.routeOptionWalkSegment,
                                 {
-                                  flex: finalWidth, // Use flex instead of width percentage
+                                  flex: safeFinalWidth, // Use flex instead of width percentage
                                   marginLeft: segIndex === 0 ? 0 : 1, // No margin on first segment, minimal on others
                                   marginRight:
                                     segIndex < segments.length - 1 ? 1 : 0, // Minimal spacing between segments
@@ -941,10 +974,7 @@ export default function BottomSheet({
                               {!isTransit && (
                                 <View style={styles.routeOptionWalkDots}>
                                   {Array.from({
-                                    length: Math.max(
-                                      4,
-                                      Math.floor(Math.max(0, finalWidth) / 3)
-                                    ),
+                                    length: safeArrayLength,
                                   }).map((_, i) => (
                                     <View
                                       key={i}

@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 import * as Location from "expo-location";
 import Map from "./src/components/Map";
 import BottomSheet from "./src/components/BottomSheet";
+import ChatBot from "./src/components/ChatBot";
 import type { Location as LocationType } from "./src/types/locations";
 import type { Plan } from "./src/services/api";
 import "./global.css";
@@ -17,6 +18,7 @@ export default function App() {
     null
   );
   const [selectedRoute, setSelectedRoute] = useState<Plan | null>(null);
+  const [aiPlans, setAiPlans] = useState<Plan[] | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
 
@@ -55,10 +57,39 @@ export default function App() {
   const handleLocationSelect = (location: LocationType | null) => {
     setSelectedLocation(location);
     setSelectedRoute(null); // Clear route when location changes
+    setAiPlans(null); // Clear AI plans when manually selecting location
   };
 
   const handleRouteSelect = (plan: Plan) => {
     setSelectedRoute(plan);
+  };
+
+  const handleChatRouteSelect = (plan: Plan) => {
+    setSelectedRoute(plan);
+    // Optionally clear selected location to show the route on map
+    // setSelectedLocation(null);
+  };
+
+  const handleViewRouteOptions = (plans: Plan[]) => {
+    if (plans.length === 0) return;
+
+    // Extract destination from the first plan (last segment's destination)
+    const firstPlan = plans[0];
+    const lastSegment = firstPlan.segments[firstPlan.segments.length - 1];
+
+    // Create a location from the destination coordinates
+    const destinationLocation: LocationType = {
+      id: "ai-destination",
+      name: "AI Suggested Destination",
+      lat: lastSegment.to_lat,
+      lng: lastSegment.to_lon,
+    };
+
+    // Set the AI plans and location to trigger route options view in BottomSheet
+    setAiPlans(plans);
+    setSelectedLocation(destinationLocation);
+    // Also set the first plan as selected route to show on map
+    setSelectedRoute(plans[0]);
   };
 
   return (
@@ -74,6 +105,7 @@ export default function App() {
         selectedLocation={selectedLocation}
         onLocationSelect={handleLocationSelect}
         onRouteSelect={handleRouteSelect}
+        aiPlans={aiPlans}
       />
       {locationError && (
         <View style={styles.errorContainer}>
@@ -89,6 +121,11 @@ export default function App() {
           </View>
         </View>
       )}
+      <ChatBot
+        userLocation={userLocation}
+        onRouteSelect={handleChatRouteSelect}
+        onViewRouteOptions={handleViewRouteOptions}
+      />
     </View>
   );
 }

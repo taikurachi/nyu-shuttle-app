@@ -240,3 +240,60 @@ export async function getStopsBetween(
     return [fromStop, toStop].filter(Boolean) as Stop[];
   }
 }
+
+/**
+ * AI Chatbot endpoint
+ */
+export interface AIResponse {
+  text: string;
+  plans: Plan[] | null;
+}
+
+export async function askAI(
+  text: string,
+  fromLat: number,
+  fromLon: number,
+  options?: {
+    context?: string[];
+    timestamp?: string;
+  }
+): Promise<AIResponse> {
+  const params = new URLSearchParams({
+    text,
+    from_lat: fromLat.toString(),
+    from_lon: fromLon.toString(),
+  });
+
+  if (options?.context && options.context.length > 0) {
+    // Context should be an array of strings
+    // The backend expects it as a query parameter array
+    // Only send context if it's not empty
+    options.context.forEach((msg) => {
+      if (msg && msg.trim()) {
+        params.append("context", msg);
+      }
+    });
+  }
+
+  if (options?.timestamp) {
+    params.append("timestamp", options.timestamp);
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/v1/ai?${params}`);
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => response.statusText);
+      throw new Error(
+        `Failed to get AI response: ${response.status} ${errorText}`
+      );
+    }
+    const data = await response.json();
+    return {
+      text: data.text || "",
+      plans: data.plans || null,
+    };
+  } catch (error) {
+    console.error("Error in askAI:", error);
+    throw error;
+  }
+}
