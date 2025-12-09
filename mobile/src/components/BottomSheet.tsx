@@ -189,23 +189,27 @@ export default function BottomSheet({
           const options: RouteOption[] = plansWithTransit
             .slice(0, 3)
             .map((plan, index) => {
-              // Parse departure time
+              // Parse departure time (format: HH:MM:SS or HH:MM)
               const departureTimeStr = plan.departure_time;
-              const [hours, minutes, seconds] = departureTimeStr
-                .split(":")
-                .map(Number);
-              const departureDate = new Date(now);
-              departureDate.setHours(hours, minutes || 0, seconds || 0, 0);
+              const timeParts = departureTimeStr.split(":");
+              const hours = parseInt(timeParts[0], 10);
+              const minutes = parseInt(timeParts[1] || "0", 10);
+              const seconds = parseInt(timeParts[2] || "0", 10);
 
-              // If departure time is earlier than now, assume it's tomorrow
-              if (departureDate < now) {
+              // Create departure date for today
+              const departureDate = new Date(now);
+              departureDate.setHours(hours, minutes, seconds, 0);
+
+              // If departure time is in the past, assume it's for tomorrow
+              if (departureDate.getTime() < now.getTime()) {
                 departureDate.setDate(departureDate.getDate() + 1);
               }
 
-              const diffMs = departureDate.getTime() - now.getTime();
+              // Calculate difference
+              const finalDiffMs = departureDate.getTime() - now.getTime();
               const minutesUntilDeparture = Math.max(
                 0,
-                Math.round(diffMs / (1000 * 60))
+                Math.round(finalDiffMs / (1000 * 60))
               );
 
               // Format departure time
@@ -215,12 +219,28 @@ export default function BottomSheet({
                 departureDate.getMinutes()
               ).padStart(2, "0")} ${ampm}`;
 
+              // Calculate totalDuration from segments if plan.estimated_duration_minutes is missing or 0
+              let totalDuration = plan.estimated_duration_minutes || 0;
+              if (
+                totalDuration === 0 &&
+                plan.segments &&
+                plan.segments.length > 0
+              ) {
+                // Sum up all segment durations
+                totalDuration = plan.segments.reduce(
+                  (sum, segment) => sum + (segment.duration_minutes || 0),
+                  0
+                );
+              }
+              // Ensure totalDuration is never negative or zero (at least 1 minute)
+              totalDuration = Math.max(1, totalDuration);
+
               return {
                 plan,
                 routeLetter: String.fromCharCode(65 + index), // A, B, C
                 departureTime,
                 minutesUntilDeparture,
-                totalDuration: plan.estimated_duration_minutes,
+                totalDuration,
               };
             });
 
@@ -795,7 +815,8 @@ export default function BottomSheet({
             <View style={styles.section}>
               {routeOptions.map((option, index) => {
                 // Calculate segment proportions
-                const totalDuration = option.plan.estimated_duration_minutes;
+                // Use totalDuration from the option (already calculated with fallback)
+                const totalDuration = option.totalDuration;
                 const segments = option.plan.segments;
 
                 return (
@@ -805,51 +826,137 @@ export default function BottomSheet({
                     onPress={() => handleRouteOptionSelect(option)}
                   >
                     <View style={styles.routeOptionTimeline}>
-                      {segments.map((segment, segIndex) => {
-                        const widthPercent =
-                          (segment.duration_minutes / totalDuration) * 100;
-                        const isTransit = segment.type === "transit";
-                        const isFirstTransit =
-                          isTransit &&
-                          segments
-                            .slice(0, segIndex)
-                            .every((s) => s.type === "walk");
+                      {(() => {
+                        // Calculate minimum widths to ensure even spacing
+                        const MIN_TRANSIT_WIDTH_PERCENT = 15; // Minimum 15% for transit segments
+                        const MIN_WALK_WIDTH_PERCENT = 8; // Minimum 8% for walk segments
 
-                        return (
-                          <View
-                            key={segIndex}
-                            style={[
-                              isTransit
-                                ? styles.routeOptionTransitSegment
-                                : styles.routeOptionWalkSegment,
-                              { width: `${widthPercent}%` },
-                            ]}
-                          >
-                            {isTransit && isFirstTransit && (
-                              <View style={styles.routeOptionLetter}>
-                                <Text style={styles.routeOptionLetterText}>
-                                  {option.routeLetter}
-                                </Text>
-                              </View>
-                            )}
-                            {!isTransit && (
-                              <View style={styles.routeOptionWalkDots}>
-                                {Array.from({
-                                  length: Math.max(
-                                    4,
-                                    Math.floor(widthPercent / 3)
-                                  ),
-                                }).map((_, i) => (
-                                  <View
-                                    key={i}
-                                    style={styles.routeOptionWalkDot}
-                                  />
-                                ))}
-                              </View>
-                            )}
-                          </View>
+                        // Step 1: Calculate true proportional widths based on duration
+                        // Guard against division by zero
+                        const safeTotalDuration =
+                          totalDuration > 0 ? totalDuration : 1;
+                        const trueProportionalWidths = segments.map(
+                          (segment) => {
+                            const isTransit = segment.type === "transit";
+                            const baseWidth =
+                              (segment.duration_minutes / safeTotalDuration) *
+                              100;
+                            return {
+                              width: baseWidth,
+                              isTransit,
+                              duration: segment.duration_minutes,
+                            };
+                          }
                         );
-                      })}
+
+                        // Step 2: Find the smallest transit segment
+                        const transitSegments = trueProportionalWidths.filter(
+                          (seg) => seg.isTransit
+                        );
+                        const smallestTransitWidth =
+                          transitSegments.length > 0
+                            ? Math.min(
+                                ...transitSegments.map((seg) => seg.width)
+                              )
+                            : MIN_TRANSIT_WIDTH_PERCENT;
+
+                        // Step 3: If smallest transit is below minimum, scale up ALL segments proportionally
+                        let scaleFactor = 1;
+                        if (smallestTransitWidth < MIN_TRANSIT_WIDTH_PERCENT) {
+                          // Calculate scale factor to make smallest transit reach minimum
+                          scaleFactor =
+                            MIN_TRANSIT_WIDTH_PERCENT / smallestTransitWidth;
+                        }
+
+                        // Step 4: Apply scale factor to all segments (maintains visual proportionality)
+                        const scaledWidths = trueProportionalWidths.map(
+                          (seg) => ({
+                            ...seg,
+                            width: seg.width * scaleFactor,
+                          })
+                        );
+
+                        // Step 5: Apply minimums to walk segments (but transit is already at minimum or above)
+                        const adjustedWidths = scaledWidths.map((seg) => {
+                          if (!seg.isTransit) {
+                            // For walk segments, ensure minimum
+                            return {
+                              ...seg,
+                              width: Math.max(
+                                seg.width,
+                                MIN_WALK_WIDTH_PERCENT
+                              ),
+                            };
+                          }
+                          // Transit segments are already at minimum or above
+                          return seg;
+                        });
+
+                        // Step 6: If total exceeds 100%, scale down proportionally (maintains ratios)
+                        const totalWidth = adjustedWidths.reduce(
+                          (sum, seg) => sum + seg.width,
+                          0
+                        );
+
+                        let finalWidths = adjustedWidths;
+                        if (totalWidth > 100) {
+                          const finalScaleFactor = 100 / totalWidth;
+                          finalWidths = adjustedWidths.map((seg) => ({
+                            ...seg,
+                            width: seg.width * finalScaleFactor,
+                          }));
+                        }
+
+                        return segments.map((segment, segIndex) => {
+                          const isTransit = segment.type === "transit";
+                          const isFirstTransit =
+                            isTransit &&
+                            segments
+                              .slice(0, segIndex)
+                              .every((s) => s.type === "walk");
+                          const finalWidth = finalWidths[segIndex].width;
+
+                          return (
+                            <View
+                              key={segIndex}
+                              style={[
+                                isTransit
+                                  ? styles.routeOptionTransitSegment
+                                  : styles.routeOptionWalkSegment,
+                                {
+                                  flex: finalWidth, // Use flex instead of width percentage
+                                  marginLeft: segIndex === 0 ? 0 : 1, // No margin on first segment, minimal on others
+                                  marginRight:
+                                    segIndex < segments.length - 1 ? 1 : 0, // Minimal spacing between segments
+                                },
+                              ]}
+                            >
+                              {isTransit && isFirstTransit && (
+                                <View style={styles.routeOptionLetter}>
+                                  <Text style={styles.routeOptionLetterText}>
+                                    {option.routeLetter}
+                                  </Text>
+                                </View>
+                              )}
+                              {!isTransit && (
+                                <View style={styles.routeOptionWalkDots}>
+                                  {Array.from({
+                                    length: Math.max(
+                                      4,
+                                      Math.floor(Math.max(0, finalWidth) / 3)
+                                    ),
+                                  }).map((_, i) => (
+                                    <View
+                                      key={i}
+                                      style={styles.routeOptionWalkDot}
+                                    />
+                                  ))}
+                                </View>
+                              )}
+                            </View>
+                          );
+                        });
+                      })()}
                     </View>
                     <View style={styles.routeOptionInfo}>
                       <Text style={styles.routeOptionDeparture}>
@@ -926,7 +1033,7 @@ export default function BottomSheet({
               <TouchableOpacity style={styles.walkOption}>
                 <Text style={styles.walkOptionText}>Walk</Text>
                 <View style={styles.walkOptionLine}>
-                  {Array.from({ length: 20 }).map((_, i) => {
+                  {Array.from({ length: 33 }).map((_, i) => {
                     return <View key={i} style={styles.walkDot} />;
                   })}
                 </View>
@@ -1356,14 +1463,17 @@ const styles = StyleSheet.create({
   },
   routeOptionContainer: {
     marginBottom: 16,
+    width: "100%", // Ensure full width
   },
   routeOptionTimeline: {
     flexDirection: "row",
     alignItems: "center",
     height: 40,
     marginBottom: 8,
-    borderRadius: 8,
-    overflow: "hidden",
+    width: "100%", // Ensure full width but respect container margins
+    paddingLeft: 0, // No padding on left - start at edge
+    paddingRight: 0, // No padding on right - end at edge
+    overflow: "hidden", // Prevent overflow
   },
   routeOptionTransitSegment: {
     backgroundColor: "#8b5cf6",
@@ -1372,6 +1482,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
+    borderRadius: 150, // Very rounded corners
+    minWidth: 0, // Allow flex to shrink below content size
   },
   routeOptionWalkSegment: {
     backgroundColor: "transparent",
@@ -1380,6 +1492,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
+    minWidth: 0, // Allow flex to shrink below content size
   },
   routeOptionLetter: {
     width: 28,
@@ -1414,7 +1527,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 4,
+    paddingHorizontal: 0, // Remove horizontal padding to respect margins
+    marginTop: 4,
   },
   routeOptionDeparture: {
     fontSize: 14,
